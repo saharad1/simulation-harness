@@ -734,7 +734,7 @@ def test_skill_without_manifest_is_still_complete(
 
 def _bake_generation(store: Path, name: str, stamp: str, generated_at: str | None = None) -> Path:
     """Write a complete bundle at ``<store>/<name>@<stamp>``."""
-    d = store / f"{name}@{stamp}"
+    d = store / f"{name}_{stamp}"
     _write_bundle(d)
     if generated_at:
         (d / "manifest.json").write_text(
@@ -751,8 +751,8 @@ def test_one_skill_enumerates_once_across_many_generations(
     `is_dir()` follows the symlink and every generation is itself a complete bundle, so without
     the `@` filter one skill enumerates N+1 times -- which loses autostart's single-skill path.
     """
-    old = _bake_generation(temp_skills_dir, "demo", "2026-08-31-104036")
-    new = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    old = _bake_generation(temp_skills_dir, "demo", "260831-104036")
+    new = _bake_generation(temp_skills_dir, "demo", "260906-095804")
     registry = SkillRegistry(temp_skills_dir, mock_generator)
 
     assert registry.list_complete_skills() == ["demo"]
@@ -763,7 +763,7 @@ def test_most_recent_complete_skill_never_returns_a_stamped_name(
     temp_skills_dir: Path, mock_generator: MagicMock
 ) -> None:
     """A stamped name here would reach the API's `name` field and misfile every eval run."""
-    _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    _bake_generation(temp_skills_dir, "demo", "260906-095804")
     registry = SkillRegistry(temp_skills_dir, mock_generator)
 
     assert registry.most_recent_complete_skill() == "demo"
@@ -789,13 +789,13 @@ def test_skill_dir_keeps_the_flat_basename(
     The agent's staged directory is named from the skill name passed alongside the dir (see
     `build_skill_sources`), never from this basename -- `@` is not a valid Agent Skills name.
     """
-    old = _bake_generation(temp_skills_dir, "demo", "2026-08-31-104036")
-    new = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    old = _bake_generation(temp_skills_dir, "demo", "260831-104036")
+    new = _bake_generation(temp_skills_dir, "demo", "260906-095804")
     registry = SkillRegistry(temp_skills_dir, mock_generator)
 
     assert registry.skill_dir("demo") == new          # newest wins, not lexically-first
     assert registry.list_complete_skills() == ["demo"]
-    assert registry.skill_dir("demo@2026-08-31-104036") == old   # an explicit stamp pins it
+    assert registry.skill_dir("demo_260831-104036") == old   # an explicit stamp pins it
 
 
 def test_ablations_resolve_through_the_active_generation_only(
@@ -806,8 +806,8 @@ def test_ablations_resolve_through_the_active_generation_only(
     Resolving into one would run an old variant against a fresh parent -- the exact failure
     nesting exists to prevent.
     """
-    old = _bake_generation(temp_skills_dir, "demo", "2026-08-31-104036")
-    new = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    old = _bake_generation(temp_skills_dir, "demo", "260831-104036")
+    new = _bake_generation(temp_skills_dir, "demo", "260906-095804")
     _write_bundle(old / "ablations" / "demo-minskill")
     _write_bundle(new / "ablations" / "demo-minskill")
     registry = SkillRegistry(temp_skills_dir, mock_generator)

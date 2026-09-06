@@ -44,7 +44,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from simulation_harness.skills.generation.naming import GENERATION_SEP
+from simulation_harness.skills.generation.naming import split_generation_dirname
 
 
 def build_skill_sources(
@@ -83,7 +83,7 @@ def build_skill_sources(
         The caller owns ``root_dir`` and must remove it (e.g. on agent
         shutdown) once the simulation ends.
     """
-    name = skill_name or skill_dir.name.split(GENERATION_SEP, 1)[0]
+    name = skill_name or split_generation_dirname(skill_dir.name)[0]
     staging = Path(tempfile.mkdtemp(prefix="skill-sources-"))
     dest = staging / ".skills" / name
     shutil.copytree(
