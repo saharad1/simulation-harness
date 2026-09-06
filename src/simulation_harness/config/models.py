@@ -38,6 +38,40 @@ class SkillsConfig(BaseModel):
     folder: str = Field(..., description="Path to skills directory")
 
 
+class AblationConfig(BaseModel):
+    """Which of the simulator's two components are enabled.
+
+    Both default True — the full method. Turning either off yields one cell of the
+    2x2 ablation grid used to attribute fidelity to the components:
+
+        skill=T state=T  full method (default)
+        skill=T state=F  semantic contract, no persistent world
+        skill=F state=T  seed corpus + state tools, no operation contract
+        skill=F state=F  spec-only emulation (the ToolEmu-style baseline)
+
+    These are EVALUATION conditions, not features. Nothing in normal operation
+    should set them; they exist so the paper's component claims are falsifiable.
+    """
+
+    skill: bool = Field(
+        True,
+        description="Load SKILL.md (per-operation contracts, derivation rules, "
+        "scenarios) into the agent. When False the agent sees only the OpenAPI "
+        "spec in its system prompt.",
+    )
+    state: bool = Field(
+        True,
+        description="Enable the seed database and the session-scoped state store "
+        "(state_* tools). When False the agent has no persistence and must "
+        "fabricate every response from the request alone.",
+    )
+
+    @property
+    def label(self) -> str:
+        """Short condition name for logs, run notes and report columns."""
+        return f"skill={'on' if self.skill else 'off'},state={'on' if self.state else 'off'}"
+
+
 class SessionsConfig(BaseModel):
     """Session limits configuration."""
 
@@ -178,6 +212,11 @@ class HarnessConfig(BaseModel):
     llm: LLMConfig
     skills: SkillsConfig
     sessions: SessionsConfig
+    ablation: AblationConfig = Field(
+        default_factory=AblationConfig,
+        description="Component toggles for evaluation baselines. Defaults to the "
+        "full method; see AblationConfig.",
+    )
     creation: CreationConfig = Field(
         default_factory=CreationConfig,
         description="Async simulation-creation tuning.",

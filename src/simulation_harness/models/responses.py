@@ -1,7 +1,7 @@
 """API response models for simulation harness."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,25 @@ class SimulationResponse(BaseModel):
     )
     created_at: datetime = Field(
         ..., description="Timestamp when simulation was declared"
+    )
+    components: dict[str, bool] = Field(
+        default_factory=lambda: {"skill": True, "state": True},
+        description="Which simulator components are enabled: `skill` (SKILL.md loaded) and "
+        "`state` (seed DB + state_* tools). Both true in normal operation; either false means "
+        "the harness was started in an ablation configuration. Exposed so an evaluation can "
+        "RECORD the configuration it measured instead of being told out-of-band.",
+    )
+    sampling: dict[str, Optional[float]] = Field(
+        # Annotated so the lambda's inferred type is dict[str, float | None] rather than
+        # dict[str, None], which does not match the field.
+        default_factory=lambda: cast(
+            "dict[str, Optional[float]]", {"temperature": None}
+        ),
+        description="Decoding parameters this process is serving: `temperature` (and `max_tokens` "
+        "when set). Exposed for the same reason as `components` — two runs that differ only in "
+        "temperature are otherwise indistinguishable in their artifacts, so a determinism study "
+        "could not tell a sampled run from a greedy one after the fact. None means the harness "
+        "could not read its config, which is reported as unknown rather than assumed to be 0.",
     )
     progress: ProgressPayload = Field(..., description="Creation progress info")
     error: Optional[ErrorPayload] = Field(

@@ -20,6 +20,15 @@ def _int_env(name: str) -> int | None:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from e
 
 
+def _float_env(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from e
+
 def _bool_env(name: str) -> bool | None:
     raw = os.getenv(name)
     if raw is None:
@@ -45,6 +54,8 @@ def apply_env_overrides(config: HarnessConfig) -> HarnessConfig:
       HARNESS_AUTOSTART_ENABLED, HARNESS_AUTOSTART_SIMULATION
       HARNESS_LLM_PROVIDER, HARNESS_LLM_SKILL_GENERATION_MODEL,
       HARNESS_LLM_SIMULATION_MODEL
+      HARNESS_ABLATION_SKILL, HARNESS_ABLATION_STATE
+      HARNESS_LLM_TEMPERATURE
     """
     data = config.model_dump()
 
@@ -64,6 +75,14 @@ def apply_env_overrides(config: HarnessConfig) -> HarnessConfig:
     simulation_model = os.getenv("HARNESS_LLM_SIMULATION_MODEL")
     if simulation_model is not None:
         data["llm"]["simulation_model"] = simulation_model
+
+    # Sampling temperature. Env-driven for the same reason the ablation toggles are: a
+    # determinism study needs several harness processes that differ ONLY in temperature, and
+    # editing YAML between them would make the runs order-dependent. Validated by the model
+    # (0 <= t <= 2), so a typo fails at startup rather than silently sampling.
+    temperature = _float_env("HARNESS_LLM_TEMPERATURE")
+    if temperature is not None:
+        data["llm"]["temperature"] = temperature
 
     server_host = os.getenv("HARNESS_SERVER_HOST")
     if server_host is not None:
@@ -108,6 +127,18 @@ def apply_env_overrides(config: HarnessConfig) -> HarnessConfig:
     autostart = os.getenv("HARNESS_AUTOSTART_SIMULATION")
     if autostart is not None:
         data["startup"]["autostart_simulation"] = autostart
+
+    # Ablation toggles. Env-var driven on purpose: the eval harness starts a fresh
+    # harness process per condition, so a condition must be selectable without
+    # editing a YAML file (which would make the runs order-dependent and easy to
+    # leave in the wrong state).
+    ablation_skill = _bool_env("HARNESS_ABLATION_SKILL")
+    if ablation_skill is not None:
+        data["ablation"]["skill"] = ablation_skill
+
+    ablation_state = _bool_env("HARNESS_ABLATION_STATE")
+    if ablation_state is not None:
+        data["ablation"]["state"] = ablation_state
 
     overridden = HarnessConfig(**data)
 
