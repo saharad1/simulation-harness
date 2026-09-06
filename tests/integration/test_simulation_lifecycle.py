@@ -9,8 +9,14 @@ import os
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+from simulation_harness.skills.generation.naming import (
+    GENERATION_SEP,
+    generation_stamp,
+)
 
 import pytest
 import yaml
@@ -744,8 +750,15 @@ async def _fake_generate_writing_artifacts(
 
     Mirrors the module's convention of not hitting the real LLM, but produces a
     complete on-disk skill bundle so setup/start can read it back.
+
+    Writes a GENERATION directory (`<name>@<stamp>`) like the real generator, and lets
+    ``ensure_skill`` create the ``<name>`` symlink. Writing flat would collide with that
+    symlink on the next run: ``mkdir(exist_ok=True)`` raises ``FileExistsError`` on a symlink,
+    and this test's skills folder is the checkout's real store, so it persists between tests.
     """
-    d = Path(skills_folder) / simulation_name
+    d = Path(skills_folder) / (
+        f"{simulation_name}{GENERATION_SEP}{generation_stamp(datetime.now(timezone.utc))}"
+    )
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(
         f"---\nname: {simulation_name}\ndescription: Test skill\n---\n# skill\n"
@@ -791,7 +804,15 @@ def test_setup_then_start_then_tool_call(
             assert tools.status_code == 200
             assert len(tools.json()) > 0
     finally:
-        shutil.rmtree(skills_dir / "test-api", ignore_errors=True)
+        # The name is a symlink now, so unlink it and remove the generation(s) behind it.
+        # rmtree refuses a symlink, and leaving either behind pollutes the checkout's store.
+        link = skills_dir / "test-api"
+        if link.is_symlink():
+            link.unlink()
+        else:
+            shutil.rmtree(link, ignore_errors=True)
+        for gen in skills_dir.glob(f"test-api{GENERATION_SEP}*"):
+            shutil.rmtree(gen, ignore_errors=True)
 
 
 def test_start_without_artifacts_returns_404(app_client: Any) -> None:

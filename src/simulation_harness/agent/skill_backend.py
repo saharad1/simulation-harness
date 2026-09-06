@@ -44,6 +44,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from simulation_harness.skills.generation.naming import GENERATION_SEP
+
 
 def build_skill_sources(skill_dir: Path) -> tuple[str, list[str]]:
     """Stage ``skill_dir`` in a fresh root and return backend root + sources.
@@ -55,9 +57,13 @@ def build_skill_sources(skill_dir: Path) -> tuple[str, list[str]]:
 
     A stale ``.skills`` directory left inside ``skill_dir`` by the old design is
     skipped during the copy, so it is never propagated into the staging tree.
+    ``ablations/`` is skipped too: a parent's ablated variants are other
+    conditions of the experiment, and staging them would show the agent thinner
+    copies of its own contract.
 
     Args:
-        skill_dir: The simulation's skill directory (contains SKILL.md).
+        skill_dir: The simulation's skill directory (contains SKILL.md). Must be
+            the flat-named path -- see the ValueError below.
 
     Returns:
         A tuple ``(root_dir, sources)`` where ``root_dir`` is the staging
@@ -66,12 +72,27 @@ def build_skill_sources(skill_dir: Path) -> tuple[str, list[str]]:
 
         The caller owns ``root_dir`` and must remove it (e.g. on agent
         shutdown) once the simulation ends.
+
+    Raises:
+        ValueError: if a generation directory (``<name>@<stamp>``) was passed
+            instead of the flat-named path.
     """
+    # `skill_dir.name` becomes the agent-visible skill directory, which deepagents validates
+    # against SKILL.md's front-matter `name:` -- and only WARNS on a mismatch. So a generation
+    # directory arriving here would stage the skill as `tau2-retail@2026-...`, log one warning
+    # nobody reads, and complete the run under a mislabeled simulator. Refuse instead: this is
+    # the one place the flat-name invariant is observable, so it is the place to enforce it.
+    if GENERATION_SEP in skill_dir.name:
+        raise ValueError(
+            f"skill_dir must be the flat-named path, got a generation directory: "
+            f"{skill_dir.name!r}. Pass the '<name>' symlink (SkillRegistry.skill_dir), not the "
+            f"resolved target -- the basename reaches the agent and labels the run."
+        )
     staging = Path(tempfile.mkdtemp(prefix="skill-sources-"))
     dest = staging / ".skills" / skill_dir.name
     shutil.copytree(
         skill_dir,
         dest,
-        ignore=shutil.ignore_patterns(".skills", "manifest.json"),
+        ignore=shutil.ignore_patterns(".skills", "manifest.json", "ablations"),
     )
     return str(staging), ["/.skills/"]

@@ -1,6 +1,7 @@
 """Tests for SkillRegistry."""
 
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -723,3 +724,145 @@ def test_skill_without_manifest_is_still_complete(
 
     assert registry.is_complete("demo") is True
     assert registry.missing_files("demo") == []
+
+
+# --- generations + the active symlink ----------------------------------------------------------
+#
+# One skill name, many generations on disk, one active. These tests pin the invariants the
+# layout rests on; each corresponds to a way the old flat layout silently did the wrong thing.
+
+
+def _bake_generation(store: Path, name: str, stamp: str, generated_at: str | None = None) -> Path:
+    """Write a complete bundle at ``<store>/<name>@<stamp>``."""
+    d = store / f"{name}@{stamp}"
+    _write_bundle(d)
+    if generated_at:
+        (d / "manifest.json").write_text(
+            json.dumps({"skill": {"name": name, "generatedAt": generated_at}})
+        )
+    return d
+
+
+def test_one_skill_enumerates_once_across_many_generations(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """Generation dirs are not skills.
+
+    `is_dir()` follows the symlink and every generation is itself a complete bundle, so without
+    the `@` filter one skill enumerates N+1 times -- which loses autostart's single-skill path.
+    """
+    old = _bake_generation(temp_skills_dir, "demo", "2026-08-31-104036")
+    new = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    os.symlink(new.name, temp_skills_dir / "demo")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    assert registry.list_complete_skills() == ["demo"]
+    assert [g.name for g in registry.generations("demo")] == [old.name, new.name]
+
+
+def test_most_recent_complete_skill_never_returns_a_stamped_name(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """A stamped name here would reach the API's `name` field and misfile every eval run."""
+    gen = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    os.symlink(gen.name, temp_skills_dir / "demo")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    assert registry.most_recent_complete_skill() == "demo"
+
+
+def test_plain_directory_still_resolves(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """An unstamped `<name>/` is one generation: a restored bundle, or a hand-placed one."""
+    _write_bundle(temp_skills_dir / "demo")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    assert registry.list_complete_skills() == ["demo"]
+    assert registry.skill_dir("demo") == temp_skills_dir / "demo"
+    assert registry.active_generation("demo") is None
+
+
+def test_skill_dir_keeps_the_flat_basename(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """The basename reaches the agent's staging dir and labels the run -- it must not be stamped."""
+    gen = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    os.symlink(gen.name, temp_skills_dir / "demo")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    assert registry.skill_dir("demo").name == "demo"
+
+
+def test_ablations_resolve_through_the_active_generation_only(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """A stale generation's ablations must be unreachable by name.
+
+    Resolving into one would run an old variant against a fresh parent -- the exact failure
+    nesting exists to prevent.
+    """
+    old = _bake_generation(temp_skills_dir, "demo", "2026-08-31-104036")
+    new = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    _write_bundle(old / "ablations" / "demo-minskill")
+    _write_bundle(new / "ablations" / "demo-minskill")
+    os.symlink(new.name, temp_skills_dir / "demo")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    resolved = registry.skill_dir("demo-minskill")
+    assert resolved.parent.parent.name == "demo", resolved
+    assert registry.list_complete_skills() == ["demo", "demo-minskill"]
+
+
+def test_activate_repoints_atomically_with_a_relative_target(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """An absolute target would dangle inside the docker bind mount."""
+    first = _bake_generation(temp_skills_dir, "demo", "2026-09-06-095804")
+    second = _bake_generation(temp_skills_dir, "demo", "2026-09-06-120000")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    registry.activate("demo", first)
+    registry.activate("demo", second)  # repointing over an existing symlink
+
+    link = temp_skills_dir / "demo"
+    assert link.is_symlink()
+    assert os.readlink(link) == second.name  # bare basename, not absolute
+    assert registry.active_generation("demo") == second
+    assert len(registry.generations("demo")) == 2  # neither was destroyed
+
+
+def test_activate_adopts_a_pre_generations_directory(
+    temp_skills_dir: Path, mock_generator: MagicMock
+) -> None:
+    """A store written before generations is preserved, not destroyed.
+
+    The previous code `rmtree`'d whatever sat at `<name>`.
+    """
+    legacy = temp_skills_dir / "demo"
+    _write_bundle(legacy)
+    (legacy / "manifest.json").write_text(
+        json.dumps({"skill": {"name": "demo", "generatedAt": "2026-09-06T09:58:04Z"}})
+    )
+    fresh = _bake_generation(temp_skills_dir, "demo", "2026-09-06-120000")
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    registry.activate("demo", fresh)
+
+    # Stamped from its manifest, not the wall clock, and still complete.
+    adopted = temp_skills_dir / "demo@2026-09-06-095804"
+    assert adopted.is_dir()
+    assert registry.is_complete("demo@2026-09-06-095804")
+    assert registry.active_generation("demo") == fresh
+
+
+def test_activate_rejects_a_generation_outside_the_store(
+    temp_skills_dir: Path, mock_generator: MagicMock, tmp_path: Path
+) -> None:
+    """The link target is a bare basename, so an outside path would dangle."""
+    outside = tmp_path / "elsewhere" / "demo@2026-09-06-095804"
+    _write_bundle(outside)
+    registry = SkillRegistry(temp_skills_dir, mock_generator)
+
+    with pytest.raises(ValueError, match="direct child"):
+        registry.activate("demo", outside)
