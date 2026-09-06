@@ -52,24 +52,29 @@ _ABLATIONS_DIR = "ablations"
 
 # --- generation directories -----------------------------------------------------------------
 #
-# One skill name maps to MANY generations on disk, and exactly one is active:
+# EVERY skill directory is a generation, named for the draw that produced it:
 #
 #   skills-store/
-#     tau2-retail -> tau2-retail@2026-09-06-095804     symlink, the ACTIVE generation
-#     tau2-retail@2026-09-06-095804/                   a generation, uniquely named
-#     tau2-retail@2026-08-31-104036/                   the previous one, left in place
+#     tau2-retail@2026-09-06-095804/     the newest -> what the name `tau2-retail` resolves to
+#     tau2-retail@2026-08-31-104036/     the previous one, left in place
 #
-# Before this, a regenerated skill overwrote its directory: two different generations were
-# indistinguishable without opening manifest.json, and rolling back meant `mv`-ing directories
-# by hand. Now the directory name states which generation it is, and rollback is repointing a
-# symlink.
+# Before this, a skill name WAS its directory: two generations were indistinguishable without
+# opening manifest.json, and regenerating overwrote the previous bundle. Now the directory name
+# states which draw it is, `ls -l skills-store` answers "which generation, since when", and
+# nothing is destroyed on regeneration.
+#
+# A NAME resolves to the NEWEST generation (the stamp is fixed-width, so lexical max is
+# chronological max). Only the store speaks in stamps: every config `skill:` field, artifact
+# path and eval overlay keeps using the flat name, and the API keeps reporting it. Pin an older
+# draw by passing `<name>@<stamp>` explicitly, which resolves to exactly that directory.
 #
 # WHY `@` AND NOT `-`: see `GENERATION_SEP` in skills/generation/naming.py -- it lives beside
 # the sanitizer that guarantees it. In short: a sanitized skill name cannot contain `@`, so
-# `"@" in dirname` is a total classifier rather than a heuristic, which is what lets a plain
-# `<name>/` directory keep resolving unchanged (a restored bundle, a hand-placed one, a test
-# fixture) instead of needing a migration. `-` would be ambiguous with the ablation suffixes
-# (`tau2-retail-minskill` vs `tau2-retail-2026-...`) AND producible by the sanitizer.
+# `"@" in dirname` is a total classifier rather than a heuristic. That is what lets a name and a
+# stamped directory share one namespace unambiguously, and it is why a plain `<name>/` directory
+# still resolves (a restored bundle, a hand-placed one, a test fixture) as one unstamped
+# generation. `-` would be ambiguous with the ablation suffixes (`tau2-retail-minskill` vs
+# `tau2-retail-2026-...`) AND producible by the sanitizer.
 _GEN_SEP = GENERATION_SEP
 
 
@@ -89,41 +94,70 @@ class SkillRegistry:
     def skill_dir(self, simulation_name: str) -> Path:
         """Directory holding ``simulation_name``'s bundle.
 
-        A top-level ``<store>/<name>/`` wins -- whether it is the active-generation symlink or
-        a plain directory. Otherwise the name is looked up as an ablation nested under some
-        parent: ``<store>/<parent>/ablations/<name>/``. Falls back to the top-level path so a
-        MISSING skill still reports the canonical location in errors rather than a speculative
-        nested one.
+        Resolution order:
 
-        Returns an UNRESOLVED path, and that is load-bearing: the basename reaches the agent's
-        staging directory (`agent/skill_backend.py`) and is validated against SKILL.md's
-        front-matter `name:`, so it must stay the flat skill name. Never call `.resolve()` on
-        the result.
+        1. ``<name>@<stamp>`` -- an explicit generation, returned as-is. This is how an older
+           draw is pinned for a comparison run.
+        2. The NEWEST ``<store>/<name>@*`` generation. This is the normal path: callers name a
+           skill, the store decides which draw that currently means.
+        3. ``<store>/<name>/`` as a plain directory -- one unstamped generation (a bundle
+           restored over the API, a hand-placed one, a test fixture).
+        4. An ablation nested in the newest generation of some parent:
+           ``<store>/<parent>@<stamp>/ablations/<name>/``.
+
+        Falls back to ``<store>/<name>`` when nothing matches, so a MISSING skill reports a
+        canonical location in errors rather than a speculative one.
         """
         top = self.skills_folder / simulation_name
-        if top.is_dir():
+        # An explicit `<name>@<stamp>`: the caller named a generation, so do not reinterpret it.
+        if is_generation_dirname(simulation_name):
             return top
         if not self.skills_folder.is_dir():
             return top
+
+        newest = self.newest_generation(simulation_name)
+        if newest is not None:
+            return newest
+        # Pre-generations layout, or a restored bundle: the name IS the directory.
+        if top.is_dir():
+            return top
+
         # Skill names are flat identifiers. A name carrying a separator is not searched for as
         # an ablation (`<parent>/ablations/../..` would escape the store); it falls through to
         # the top-level join, which is what this did for every name before nesting existed --
         # so this adds no traversal surface, it just declines to widen it.
         if "/" in simulation_name or "\\" in simulation_name or simulation_name in (".", ".."):
             return top
-        for parent in sorted(self.skills_folder.iterdir()):
-            if not parent.is_dir() or parent.name.startswith("."):
-                continue
-            # Only the ACTIVE generation's ablations are reachable by name. Historical
-            # generations keep their own `ablations/` -- resolving into one would silently run
-            # a stale variant against a fresh parent, which is the exact failure nesting exists
-            # to prevent.
-            if is_generation_dirname(parent.name):
-                continue
+        # Ablations are reached through their parent's NEWEST generation only. Every generation
+        # keeps its own `ablations/`; resolving into a stale one would score an old variant
+        # against a fresh parent -- the exact confound nesting exists to prevent.
+        for parent in self._newest_generation_per_skill():
             nested = parent / _ABLATIONS_DIR / simulation_name
             if nested.is_dir():
                 return nested
         return top
+
+    def newest_generation(self, simulation_name: str) -> Path | None:
+        """The most recent ``<name>@<stamp>`` directory, or None if the name has no generations.
+
+        The stamp is fixed-width, so the lexical maximum is the chronological one -- no stat
+        calls, and no dependence on mtimes that a copy or a checkout would rewrite.
+        """
+        gens = self.generations(simulation_name)
+        return gens[-1] if gens else None
+
+    def _newest_generation_per_skill(self) -> list[Path]:
+        """One directory per skill name: its newest generation, else its plain directory."""
+        newest: dict[str, Path] = {}
+        for d in sorted(self.skills_folder.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            name = d.name.split(_GEN_SEP, 1)[0]
+            # sorted() ascending + fixed-width stamps means the last write wins, and an
+            # unstamped dir is only used when the name has no stamped generation at all.
+            if is_generation_dirname(d.name) or name not in newest:
+                newest[name] = d
+        return list(newest.values())
 
     def generations(self, simulation_name: str) -> list[Path]:
         """Every generation directory for ``simulation_name``, oldest first.
@@ -144,91 +178,6 @@ class SkillRegistry:
     def generation_dir(self, simulation_name: str, stamp: str) -> Path:
         """``<store>/<name>@<stamp>``. A plain join -- no probing, no I/O."""
         return self.skills_folder / f"{simulation_name}{_GEN_SEP}{stamp}"
-
-    def active_generation(self, simulation_name: str) -> Path | None:
-        """The generation the ``<name>`` symlink points at.
-
-        None when ``<name>`` is a plain directory (a restored or hand-placed bundle, which is
-        one unstamped generation) or absent. This is the ONLY place a skills path is resolved;
-        see `skill_dir`.
-        """
-        link = self.skills_folder / simulation_name
-        if not link.is_symlink():
-            return None
-        target = os.readlink(link)
-        return (self.skills_folder / target) if not os.path.isabs(target) else Path(target)
-
-    def activate(self, simulation_name: str, generation: Path) -> Path:
-        """Point ``<name>`` at ``generation``, atomically. Returns the symlink path.
-
-        Adopts a pre-existing plain directory rather than destroying it: a store written before
-        generations existed is renamed to its own stamp (read from its manifest) and becomes the
-        first generation, so migration is a side effect of the first write. The previous code
-        `rmtree`'d whatever sat at `<name>`.
-
-        Raises:
-            ValueError: if ``generation`` is not a direct child of the skills folder. The link
-                target is stored as a bare basename (so it survives a bind mount), which is
-                only meaningful for a sibling -- pointing it outside the store would create a
-                dangling link that reads as "skill missing" much later.
-        """
-        if generation.parent != self.skills_folder:
-            raise ValueError(
-                f"generation must be a direct child of {self.skills_folder}, got {generation}"
-            )
-        link = self.skills_folder / simulation_name
-
-        if generation == link:
-            # The caller is presenting the flat `<name>/` directory itself as the generation --
-            # a writer that predates this layout (or a stub). There is nothing to link to: the
-            # bundle already sits at the name. Leave it as one unstamped generation, which
-            # `is_generation_dirname` and `list_complete_skills` both handle.
-            return link
-
-        if link.exists() and not link.is_symlink():
-            # A plain directory from before this layout, and we are about to point the name at
-            # a different generation. Preserve it as its own generation rather than destroying
-            # it: its manifest knows when it was generated; fall back to its mtime when it
-            # predates manifests entirely.
-            stamp = self._adopted_stamp(link)
-            adopted = self.generation_dir(simulation_name, stamp)
-            if adopted.exists():
-                logger.warning(
-                    f"Cannot adopt {link.name}: {adopted.name} already exists; leaving it in "
-                    f"place and replacing the name with a symlink."
-                )
-                shutil.rmtree(link)
-            else:
-                os.rename(link, adopted)
-                logger.info(
-                    f"Adopted pre-generations skill directory: {link.name} -> {adopted.name}"
-                )
-
-        # A symlink cannot be swapped in place, so build it beside the target and rename over:
-        # `os.replace` onto a symlink replaces the LINK, not what it points at.
-        tmp = link.with_name(f".{simulation_name}.link-{uuid.uuid4().hex[:8]}")
-        if tmp.is_symlink() or tmp.exists():
-            tmp.unlink()
-        # Relative target, so the link keeps working under a bind mount (docker-compose maps
-        # the host store to /app/skills-store; an absolute target would dangle there).
-        os.symlink(generation.name, tmp)
-        os.replace(tmp, link)
-        return link
-
-    def _adopted_stamp(self, skill_dir: Path) -> str:
-        """Generation stamp for a directory that predates generations."""
-        manifest = skill_dir / "manifest.json"
-        if manifest.exists():
-            try:
-                raw = json.loads(manifest.read_text())["skill"]["generatedAt"]
-                return generation_stamp(datetime.fromisoformat(raw.replace("Z", "+00:00")))
-            except (KeyError, ValueError, TypeError, json.JSONDecodeError):
-                logger.warning(
-                    f"Could not read generatedAt from {manifest}; stamping from mtime instead"
-                )
-        return generation_stamp(
-            datetime.fromtimestamp(skill_dir.stat().st_mtime, tz=timezone.utc)
-        )
 
     async def ensure_skill(
         self,
@@ -298,18 +247,9 @@ class SkillRegistry:
                 progress_cb=progress_cb,
             )
             logger.info(f"Skill generated successfully: path={result_path}")
-            # Make the new generation active, and hand back the FLAT-named path. The generator
-            # returns `<name>@<stamp>/SKILL.md`; `simulation_creator` derives the agent's
-            # skill_dir from this return value via `.parent`, so returning the stamped path
-            # would label the run with a directory name instead of the skill name.
-            #
-            # A generator that wrote OUTSIDE the store cannot be linked to (the link target is
-            # a bare basename), so its own path is returned unchanged. That keeps a stubbed or
-            # out-of-tree generator working instead of failing a successful generation on a
-            # bookkeeping step.
-            if result_path.parent.parent == self.skills_folder:
-                self.activate(simulation_name, result_path.parent)
-                return self.skill_dir(simulation_name) / "SKILL.md"
+            # The generation directory itself. Nothing has to be "activated": the new draw has
+            # the highest stamp, so `skill_dir(name)` resolves to it from here on. Callers that
+            # need the flat skill name take it from the request, never from this basename.
             return result_path
 
         except Exception as e:
@@ -377,31 +317,26 @@ class SkillRegistry:
         return not self.missing_files(simulation_name)
 
     def list_complete_skills(self) -> list[str]:
-        """Names of complete skills: top-level ones plus each parent's nested ablations.
+        """FLAT names of complete skills, plus the ablations of each newest generation.
 
-        Generation directories are SKIPPED, so one skill yields one name however many
-        generations sit on disk. Filtering on `@` rather than on `is_symlink()` is deliberate:
-        a plain `<name>/` directory is a legitimate single unstamped generation (a bundle
-        restored over the API, a hand-placed one, a test fixture), and it must keep enumerating.
+        Names, not directories: `tau2-retail@2026-09-06-095804/` reports as `tau2-retail`, and
+        several generations of one skill collapse to a single name. Anything else and one skill
+        would enumerate N times -- which loses autostart's single-skill path -- and a STAMPED
+        name could reach the API's `name` field, where it would misfile every eval run keyed on
+        it (`eval-skills/<name>/`, `artifacts/taubench/<name>/`).
 
-        Without this filter one skill enumerates N+1 times (`is_dir()` follows the symlink, and
-        every generation is itself a complete directory). That is not cosmetic: it breaks the
-        single-skill autostart path, and `most_recent_complete_skill` then ties on mtime between
-        a symlink and its target and can return the STAMPED name -- which flows to the API's
-        `name` field and corrupts every eval-side path keyed on it.
+        Only the newest generation's ablations are listed, for the same reason `skill_dir`
+        resolves them there: a stale variant is not a condition of the current parent.
         """
         if not self.skills_folder.exists():
             return []
         names: list[str] = []
-        for d in sorted(self.skills_folder.iterdir()):
-            if not d.is_dir() or d.name.startswith("."):
-                continue
-            if is_generation_dirname(d.name):
-                continue
-            if self.is_complete(d.name):
-                names.append(d.name)
-            # Ablations of this parent. Nested one level only, never recursive, so the store
-            # cannot grow a tree deep enough to make a name ambiguous.
+        for d in self._newest_generation_per_skill():
+            name = d.name.split(_GEN_SEP, 1)[0]
+            if self.is_complete(name):
+                names.append(name)
+            # Ablations nest one level only, never recursively, so the store cannot grow a tree
+            # deep enough to make a name ambiguous.
             ablations = d / _ABLATIONS_DIR
             if ablations.is_dir():
                 names.extend(
@@ -409,13 +344,12 @@ class SkillRegistry:
                     for a in sorted(ablations.iterdir())
                     if a.is_dir() and not a.name.startswith(".") and self.is_complete(a.name)
                 )
-        return names
+        return sorted(names)
 
     def most_recent_complete_skill(self) -> str | None:
-        """The complete skill with the newest SKILL.md mtime, or None if none exist.
+        """The complete skill whose active generation has the newest SKILL.md, else None.
 
-        Reads through `skill_dir`, so for a symlinked name this is the ACTIVE generation's
-        mtime -- "most recently generated skill", not "most recently touched directory".
+        Resolves through `skill_dir`, so this compares the generations actually in use.
         """
         complete = self.list_complete_skills()
         if not complete:

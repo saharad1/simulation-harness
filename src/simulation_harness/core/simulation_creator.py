@@ -134,7 +134,9 @@ class SimulationCreator:
                     name=self._record.name,
                     missing=self._skill_registry.missing_files(self._record.name),
                 )
-            skill_dir = self._skill_registry.skills_folder / self._record.name
+            # Through the registry, not a plain join: a name resolves to its NEWEST
+            # generation directory (`<name>@<stamp>`), or to a nested ablation.
+            skill_dir = self._skill_registry.skill_dir(self._record.name)
 
         if not self._start:
             self._record.mark_generated()
