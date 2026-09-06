@@ -1,7 +1,7 @@
 """Simulation management API routes."""
 
 import gzip
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
@@ -52,6 +52,28 @@ def _build_mcp_url(request: Request, mcp_port: int | None) -> str:
 def _record_to_response(
     record: SimulationRecord, request: Request
 ) -> SimulationResponse:
+    # Read the ablation toggles off the live config so the status endpoint reports what this
+    # process is ACTUALLY serving. An evaluation can then record the configuration it measured
+    # from the harness itself, rather than trusting a caller to label the run correctly.
+    #
+    # Defaults to the full method when config is not loaded: this is a description of the running
+    # process, never a reason to fail a status request, and several tests exercise the endpoint
+    # without a loaded config.
+    #
+    # `sampling` rides along for the same reason, with one difference: an unknown temperature is
+    # reported as None, not as the 0 default. Defaulting it would let a run whose harness could not
+    # read its config be recorded as greedy, which is exactly the mislabel a determinism study
+    # cannot tolerate.
+    try:
+        _cfg = get_config()
+        _abl = _cfg.ablation
+        components = {"skill": _abl.skill, "state": _abl.state}
+        sampling: dict[str, Optional[float]] = {"temperature": _cfg.llm.temperature}
+        if _cfg.llm.max_tokens is not None:
+            sampling["max_tokens"] = float(_cfg.llm.max_tokens)
+    except RuntimeError:
+        components = {"skill": True, "state": True}
+        sampling = {"temperature": None}
     progress = ProgressPayload(
         phase=record.progress.phase,
         started_at=record.progress.started_at,
@@ -74,6 +96,8 @@ def _record_to_response(
             session_state=record.instance.get_session_state(),
             mcp_url=_build_mcp_url(request, record.instance.mcp_port),
             created_at=record.created_at,
+            components=components,
+            sampling=sampling,
             progress=progress,
             error=error,
         )
@@ -84,6 +108,8 @@ def _record_to_response(
         session_state=None,
         mcp_url=None,
         created_at=record.created_at,
+        components=components,
+        sampling=sampling,
         progress=progress,
         error=error,
     )

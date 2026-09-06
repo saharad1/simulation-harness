@@ -35,6 +35,13 @@ def _parse_int(name: str, raw: str) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from e
 
 
+def _parse_float(name: str, raw: str) -> float:
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from e
+
+
 def _parse_bool(name: str, raw: str) -> bool:
     lowered = raw.strip().lower()
     if lowered in ("true", "1", "yes"):
@@ -66,6 +73,12 @@ _OVERRIDES: Sequence[tuple[str, tuple[str, str], Callable[[str, str], Any]]] = (
         _parse_str,
     ),
     ("HARNESS_LLM_SIMULATION_MODEL", ("llm", "simulation_model"), _parse_str),
+    # Sampling temperature. Env-driven for the same reason the ablation toggles are:
+    # a determinism study needs several harness processes that differ ONLY in
+    # temperature, and editing YAML between them would make the runs
+    # order-dependent. Validated by the model (0 <= t <= 2), so a typo fails at
+    # startup rather than silently sampling.
+    ("HARNESS_LLM_TEMPERATURE", ("llm", "temperature"), _parse_float),
     ("HARNESS_SERVER_HOST", ("server", "host"), _parse_str),
     ("HARNESS_SERVER_PORT", ("server", "port"), _parse_int),
     ("HARNESS_SKILLS_FOLDER", ("skills", "folder"), _parse_str),
@@ -85,6 +98,12 @@ _OVERRIDES: Sequence[tuple[str, tuple[str, str], Callable[[str, str], Any]]] = (
     ),
     ("HARNESS_AUTOSTART_ENABLED", ("startup", "autostart_enabled"), _parse_bool),
     ("HARNESS_AUTOSTART_SIMULATION", ("startup", "autostart_simulation"), _parse_str),
+    # Ablation toggles. Env-var driven on purpose: the eval harness starts a fresh
+    # harness process per condition, so a condition must be selectable without
+    # editing a YAML file (which would make the runs order-dependent and easy to
+    # leave in the wrong state).
+    ("HARNESS_ABLATION_SKILL", ("ablation", "skill"), _parse_bool),
+    ("HARNESS_ABLATION_STATE", ("ablation", "state"), _parse_bool),
 )
 
 RECOGNIZED_KEYS = frozenset(name for name, _, _ in _OVERRIDES) | _NON_OVERRIDE_KEYS
@@ -129,7 +148,8 @@ def apply_env_overrides(
       HARNESS_SESSIONS_MAX_CONCURRENT_QUEUE_DEPTH
       HARNESS_AUTOSTART_ENABLED, HARNESS_AUTOSTART_SIMULATION
       HARNESS_LLM_PROVIDER, HARNESS_LLM_SKILL_GENERATION_MODEL,
-      HARNESS_LLM_SIMULATION_MODEL
+      HARNESS_LLM_SIMULATION_MODEL, HARNESS_LLM_TEMPERATURE
+      HARNESS_ABLATION_SKILL, HARNESS_ABLATION_STATE
 
     Raises:
         ValueError: If a variable is set to a value of the wrong type, whether
