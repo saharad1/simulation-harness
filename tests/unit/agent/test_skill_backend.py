@@ -143,20 +143,36 @@ def test_excluding_manifest_leaves_the_source_intact(
     assert (skill_dir / "manifest.json").exists()
 
 
-def test_build_skill_sources_rejects_a_generation_directory(tmp_path: Path) -> None:
-    """A stamped dir here would label the run with a directory name.
+def test_build_skill_sources_stages_under_the_flat_skill_name(tmp_path: Path) -> None:
+    """The staged basename is the SKILL name, never the generation directory's.
 
-    deepagents only WARNS when SKILL.md's front-matter `name` disagrees with the directory
-    basename, so this would otherwise complete a run under a mislabeled simulator.
+    deepagents validates that basename against SKILL.md's front-matter `name:`, and `@` is not a
+    valid Agent Skills name -- so staging under the directory name would warn on every load and
+    make the skill's identity change with every regeneration.
     """
+    from simulation_harness.agent.skill_backend import build_skill_sources
+
     gen = tmp_path / "demo@2026-09-06-095804"
     gen.mkdir()
     (gen / "SKILL.md").write_text("---\nname: demo\n---\n# demo\n")
 
+    root, _ = build_skill_sources(gen, "demo")
+
+    assert (Path(root) / ".skills" / "demo" / "SKILL.md").exists()
+    assert not (Path(root) / ".skills" / gen.name).exists()
+
+
+def test_build_skill_sources_strips_the_stamp_when_no_name_given(tmp_path: Path) -> None:
+    """Falling back to the basename still yields a valid name, not a stamped one."""
     from simulation_harness.agent.skill_backend import build_skill_sources
 
-    with pytest.raises(ValueError, match="flat-named path"):
-        build_skill_sources(gen)
+    gen = tmp_path / "demo@2026-09-06-095804"
+    gen.mkdir()
+    (gen / "SKILL.md").write_text("---\nname: demo\n---\n# demo\n")
+
+    root, _ = build_skill_sources(gen)
+
+    assert (Path(root) / ".skills" / "demo").is_dir()
 
 
 def test_build_skill_sources_excludes_ablations(tmp_path: Path) -> None:

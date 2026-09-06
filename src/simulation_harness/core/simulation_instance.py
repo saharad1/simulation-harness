@@ -88,6 +88,10 @@ class SimulationInstance:
             operations=operations,
             session_timeout_seconds=idle_timeout_seconds,
             skill_dir=skill_dir,
+            # The flat skill name, so the agent's staged directory is named for the SKILL and
+            # not for the generation directory it came from (`<name>@<stamp>` is not a valid
+            # Agent Skills name, and would make the skill's identity move on every regeneration).
+            skill_name=spec.name,
             agent_recursion_limit=agent_recursion_limit,
         )
 

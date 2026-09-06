@@ -47,11 +47,13 @@ from pathlib import Path
 from simulation_harness.skills.generation.naming import GENERATION_SEP
 
 
-def build_skill_sources(skill_dir: Path) -> tuple[str, list[str]]:
+def build_skill_sources(
+    skill_dir: Path, skill_name: str | None = None
+) -> tuple[str, list[str]]:
     """Stage ``skill_dir`` in a fresh root and return backend root + sources.
 
     Creates a new temporary directory and copies ``skill_dir`` into
-    ``<staging>/.skills/<skill_dir.name>``. The backend is rooted at
+    ``<staging>/.skills/<skill_name>``. The backend is rooted at
     ``<staging>``, so the SkillsMiddleware discovers exactly this one skill and
     no sibling simulations leak in.
 
@@ -62,8 +64,16 @@ def build_skill_sources(skill_dir: Path) -> tuple[str, list[str]]:
     copies of its own contract.
 
     Args:
-        skill_dir: The simulation's skill directory (contains SKILL.md). Must be
-            the flat-named path -- see the ValueError below.
+        skill_dir: The simulation's skill directory (contains SKILL.md). This is a
+            GENERATION directory (``<name>@<stamp>``), so its basename is not the
+            skill name.
+        skill_name: The flat skill name. Passed explicitly rather than taken from
+            ``skill_dir.name``: the staged directory's basename is what deepagents
+            validates against SKILL.md's front-matter ``name:``, and the Agent Skills
+            spec forbids the ``@`` in a stamped directory name. Inferring it would
+            either warn on every load or make the skill's identity change with every
+            regeneration. Defaults to the basename for a store that predates
+            generations.
 
     Returns:
         A tuple ``(root_dir, sources)`` where ``root_dir`` is the staging
@@ -72,24 +82,10 @@ def build_skill_sources(skill_dir: Path) -> tuple[str, list[str]]:
 
         The caller owns ``root_dir`` and must remove it (e.g. on agent
         shutdown) once the simulation ends.
-
-    Raises:
-        ValueError: if a generation directory (``<name>@<stamp>``) was passed
-            instead of the flat-named path.
     """
-    # `skill_dir.name` becomes the agent-visible skill directory, which deepagents validates
-    # against SKILL.md's front-matter `name:` -- and only WARNS on a mismatch. So a generation
-    # directory arriving here would stage the skill as `tau2-retail@2026-...`, log one warning
-    # nobody reads, and complete the run under a mislabeled simulator. Refuse instead: this is
-    # the one place the flat-name invariant is observable, so it is the place to enforce it.
-    if GENERATION_SEP in skill_dir.name:
-        raise ValueError(
-            f"skill_dir must be the flat-named path, got a generation directory: "
-            f"{skill_dir.name!r}. Pass the '<name>' symlink (SkillRegistry.skill_dir), not the "
-            f"resolved target -- the basename reaches the agent and labels the run."
-        )
+    name = skill_name or skill_dir.name.split(GENERATION_SEP, 1)[0]
     staging = Path(tempfile.mkdtemp(prefix="skill-sources-"))
-    dest = staging / ".skills" / skill_dir.name
+    dest = staging / ".skills" / name
     shutil.copytree(
         skill_dir,
         dest,

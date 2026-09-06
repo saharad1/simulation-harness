@@ -62,6 +62,7 @@ class DeepAgent:
         operations: list[OpenAPIOperation],
         session_timeout_seconds: int = 3600,
         skill_dir: Path | None = None,
+        skill_name: str | None = None,
         agent_recursion_limit: int = 50,
     ):
         """Initialize Deep Agent.
@@ -75,13 +76,17 @@ class DeepAgent:
             spec: OpenAPI specification
             operations: List of API operations
             session_timeout_seconds: Session timeout in seconds
-            skill_dir: Optional path to skill directory for state store
+            skill_dir: Optional path to skill directory for state store. A GENERATION
+                directory (``<name>@<stamp>``), so its basename is not the skill name.
+            skill_name: Flat skill name for the agent-visible staging directory. Defaults
+                to ``skill_dir``'s basename with any generation stamp stripped.
             agent_recursion_limit: Maximum recursion depth for agent (default: 10)
         """
         self.spec = spec
         self.operations = operations
         self.session_timeout_seconds = session_timeout_seconds
         self.skill_dir = skill_dir
+        self.skill_name = skill_name
         self.agent_recursion_limit = agent_recursion_limit
 
         # Per-simulation staging dir for the skills backend, created lazily in
@@ -161,7 +166,7 @@ class DeepAgent:
         if self.store_registry and self.skill_dir:
             tools = create_state_tools()
 
-            root_dir, sources = build_skill_sources(self.skill_dir)
+            root_dir, sources = build_skill_sources(self.skill_dir, self.skill_name)
             self._skill_staging_dir = Path(root_dir)
             backend = FilesystemBackend(root_dir=root_dir, virtual_mode=True)
 
