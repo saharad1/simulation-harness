@@ -152,7 +152,7 @@ def test_build_skill_sources_stages_under_the_flat_skill_name(tmp_path: Path) ->
     """
     from simulation_harness.agent.skill_backend import build_skill_sources
 
-    gen = tmp_path / "demo@2026-09-06-095804"
+    gen = tmp_path / "demo_260906-095804"
     gen.mkdir()
     (gen / "SKILL.md").write_text("---\nname: demo\n---\n# demo\n")
 
@@ -166,7 +166,7 @@ def test_build_skill_sources_strips_the_stamp_when_no_name_given(tmp_path: Path)
     """Falling back to the basename still yields a valid name, not a stamped one."""
     from simulation_harness.agent.skill_backend import build_skill_sources
 
-    gen = tmp_path / "demo@2026-09-06-095804"
+    gen = tmp_path / "demo_260906-095804"
     gen.mkdir()
     (gen / "SKILL.md").write_text("---\nname: demo\n---\n# demo\n")
 

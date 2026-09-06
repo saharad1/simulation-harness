@@ -19,21 +19,39 @@ _MAX_SKILL_NAME_LEN = 64
 _HYPHEN_RUN_RE = re.compile(r"-+")
 
 # Separator between a skill name and its generation stamp in the skills-store
-# (`tau2-retail@2026-09-06-095804`). It lives HERE, beside the sanitizer, because
+# (`tau2-retail_260906-095804`). It lives HERE, beside the sanitizer, because
 # `sanitize_skill_name` is precisely what makes it safe: every character outside
-# [a-z0-9] becomes `-`, so a sanitized name can never contain `@`. That turns
-# "is this directory a generation or a skill?" into a decidable test rather than
-# a heuristic. Change the sanitizer's alphabet and this guarantee moves with it.
-GENERATION_SEP = "@"
+# [a-z0-9] becomes `-`, so a sanitized name can never contain `_`. Change the
+# sanitizer's alphabet and this guarantee moves with it.
+GENERATION_SEP = "_"
 #: Generation stamp format. UTC, and rendered from the manifest's `skill.generatedAt` rather
 #: than the wall clock, so the directory name is a view of the manifest and the two cannot
 #: disagree. Fixed width, so a lexical sort of generation dirs is a chronological one.
-GENERATION_STAMP_FMT = "%Y-%m-%d-%H%M%S"
+GENERATION_STAMP_FMT = "%y%m%d-%H%M%S"
+
+#: A generation suffix: the separator, then `<yymmdd>-<HHMMSS>`, then end of string.
+#: Matching the STAMP SHAPE rather than just the separator, because the store also holds
+#: bookkeeping directories that legitimately contain `_` (`_archive/`). A bare
+#: "contains the separator" test would classify those as generations.
+_GENERATION_SUFFIX_RE = re.compile(rf"{re.escape(GENERATION_SEP)}\d{{6}}-\d{{6}}$")
 
 
 def is_generation_dirname(dirname: str) -> bool:
-    """True for a `<name>@<stamp>` generation directory, never for a skill name."""
-    return GENERATION_SEP in dirname
+    """True for a `<name>_<yymmdd>-<HHMMSS>` generation directory, never for a skill name."""
+    return _GENERATION_SUFFIX_RE.search(dirname) is not None
+
+
+def split_generation_dirname(dirname: str) -> tuple[str, str | None]:
+    """`tau2-retail_260906-095804` -> `("tau2-retail", "260906-095804")`.
+
+    An unstamped name returns `(dirname, None)`. Splitting on the LAST match rather than the
+    first separator, so a name that itself contains `_` (unreachable via the sanitizer, but
+    possible for a hand-placed directory) is not truncated.
+    """
+    m = _GENERATION_SUFFIX_RE.search(dirname)
+    if m is None:
+        return dirname, None
+    return dirname[: m.start()], dirname[m.start() + len(GENERATION_SEP) :]
 
 
 def generation_stamp(generated_at: datetime) -> str:

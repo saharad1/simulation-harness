@@ -75,26 +75,26 @@ no alias directory and no symlink — the stamped name IS the identity.
 
 ```
 skills-store/
-  tau2-retail@2026-09-06-095804/     # the newest → what the name `tau2-retail` resolves to
+  tau2-retail_260906-095804/     # the newest → what the name `tau2-retail` resolves to
       SKILL.md schema.json db.json api.json manifest.json
       ablations/tau2-retail-minskill/    # leaf keeps the FULL, flat skill name
-  tau2-retail@2026-08-31-104036/     # previous generation, left in place
+  tau2-retail_260831-104036/     # previous generation, left in place
   _archive/                          # FROZEN pre-generations history
 ```
 
 `ls -l skills-store` answers "which generations exist, and since when" with no file reads.
 
 - **A NAME resolves to the NEWEST generation.** `skill_dir("tau2-retail")` →
-  `tau2-retail@2026-09-06-095804/`. The stamp is fixed-width, so lexical max is chronological
+  `tau2-retail_260906-095804/`. The stamp is fixed-width, so lexical max is chronological
   max — no stat calls, no dependence on mtimes a copy or checkout would rewrite. Pin an older
-  draw by passing `tau2-retail@2026-08-31-104036` explicitly.
+  draw by passing `tau2-retail_260831-104036` explicitly.
 - **Only the store speaks in stamps.** Config `skill:` fields, `eval-skills/<name>/`,
   `artifacts/taubench/<name>/`, and `GET /api/v1/simulation`'s `name` all stay flat. The API
   name comes from the request (`sanitize_skill_name(body.name)`), never from a directory.
-- **Stamp** is `%Y-%m-%d-%H%M%S` in **UTC**, rendered from the manifest's `skill.generatedAt`,
+- **Stamp** is `%y%m%d-%H%M%S` in **UTC**, rendered from the manifest's `skill.generatedAt`,
   so the directory name is a view of the manifest rather than a second fact that can disagree.
-- **`@` is the separator** because `sanitize_skill_name` maps everything outside `[a-z0-9]` to
-  `-`, so a skill name can never contain `@`. That makes `is_generation_dirname()` decidable
+- **`_` is the separator** because `sanitize_skill_name` maps everything outside `[a-z0-9]` to
+  `-`, so a skill name can never contain `_`. That makes `is_generation_dirname()` decidable
   rather than heuristic, which is why a plain `<name>/` directory (a bundle restored over the
   API, a hand-placed one, a test fixture) still resolves as one unstamped generation. `-` would
   be ambiguous with the ablation suffixes (`-minskill`, `-bareskill`, …).

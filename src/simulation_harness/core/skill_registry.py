@@ -14,6 +14,7 @@ from simulation_harness.skills.generation.naming import (
     GENERATION_SEP,
     generation_stamp,
     is_generation_dirname,
+    split_generation_dirname,
 )
 from simulation_harness.skills.generator import SkillGenerator
 from simulation_harness.utils.errors import DatabaseValidationError
@@ -55,8 +56,8 @@ _ABLATIONS_DIR = "ablations"
 # EVERY skill directory is a generation, named for the draw that produced it:
 #
 #   skills-store/
-#     tau2-retail@2026-09-06-095804/     the newest -> what the name `tau2-retail` resolves to
-#     tau2-retail@2026-08-31-104036/     the previous one, left in place
+#     tau2-retail_260906-095804/     the newest -> what the name `tau2-retail` resolves to
+#     tau2-retail_260831-104036/     the previous one, left in place
 #
 # Before this, a skill name WAS its directory: two generations were indistinguishable without
 # opening manifest.json, and regenerating overwrote the previous bundle. Now the directory name
@@ -66,15 +67,16 @@ _ABLATIONS_DIR = "ablations"
 # A NAME resolves to the NEWEST generation (the stamp is fixed-width, so lexical max is
 # chronological max). Only the store speaks in stamps: every config `skill:` field, artifact
 # path and eval overlay keeps using the flat name, and the API keeps reporting it. Pin an older
-# draw by passing `<name>@<stamp>` explicitly, which resolves to exactly that directory.
+# draw by passing `<name>_<stamp>` explicitly, which resolves to exactly that directory.
 #
-# WHY `@` AND NOT `-`: see `GENERATION_SEP` in skills/generation/naming.py -- it lives beside
-# the sanitizer that guarantees it. In short: a sanitized skill name cannot contain `@`, so
-# `"@" in dirname` is a total classifier rather than a heuristic. That is what lets a name and a
-# stamped directory share one namespace unambiguously, and it is why a plain `<name>/` directory
-# still resolves (a restored bundle, a hand-placed one, a test fixture) as one unstamped
-# generation. `-` would be ambiguous with the ablation suffixes (`tau2-retail-minskill` vs
-# `tau2-retail-2026-...`) AND producible by the sanitizer.
+# WHY `_` AND NOT `-`: see `GENERATION_SEP` in skills/generation/naming.py -- it lives beside
+# the sanitizer that guarantees it. A sanitized skill name cannot contain `_`, so a name and a
+# stamped directory share one namespace unambiguously; `-` would be ambiguous with the ablation
+# suffixes (`tau2-retail-minskill` vs `tau2-retail-260906-...`) AND producible by the sanitizer.
+# `is_generation_dirname` matches the STAMP SHAPE (`_<yymmdd>-<HHMMSS>`) rather than merely the
+# separator, because the store also holds `_archive/`, which contains `_` and is not a
+# generation. A plain `<name>/` directory therefore still resolves (a restored bundle, a
+# hand-placed one, a test fixture) as one unstamped generation.
 _GEN_SEP = GENERATION_SEP
 
 
@@ -152,7 +154,7 @@ class SkillRegistry:
         for d in sorted(self.skills_folder.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
                 continue
-            name = d.name.split(_GEN_SEP, 1)[0]
+            name, _ = split_generation_dirname(d.name)
             # sorted() ascending + fixed-width stamps means the last write wins, and an
             # unstamped dir is only used when the name has no stamped generation at all.
             if is_generation_dirname(d.name) or name not in newest:
@@ -332,7 +334,7 @@ class SkillRegistry:
             return []
         names: list[str] = []
         for d in self._newest_generation_per_skill():
-            name = d.name.split(_GEN_SEP, 1)[0]
+            name, _ = split_generation_dirname(d.name)
             if self.is_complete(name):
                 names.append(name)
             # Ablations nest one level only, never recursively, so the store cannot grow a tree
