@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 # Leading YAML frontmatter block: opening `---`, body, closing `---`.
 _FRONTMATTER_RE = re.compile(r"(?s)\A(---[ \t]*\n)(.*?)(\n---[ \t]*(?:\n|\Z))")
@@ -16,6 +17,30 @@ _NAME_LINE_RE = re.compile(r"(?m)^name[ \t]*:.*$")
 _MAX_SKILL_NAME_LEN = 64
 # Runs of one or more hyphens, used to collapse consecutive separators.
 _HYPHEN_RUN_RE = re.compile(r"-+")
+
+# Separator between a skill name and its generation stamp in the skills-store
+# (`tau2-retail@2026-09-06-095804`). It lives HERE, beside the sanitizer, because
+# `sanitize_skill_name` is precisely what makes it safe: every character outside
+# [a-z0-9] becomes `-`, so a sanitized name can never contain `@`. That turns
+# "is this directory a generation or a skill?" into a decidable test rather than
+# a heuristic. Change the sanitizer's alphabet and this guarantee moves with it.
+GENERATION_SEP = "@"
+#: Generation stamp format. UTC, and rendered from the manifest's `skill.generatedAt` rather
+#: than the wall clock, so the directory name is a view of the manifest and the two cannot
+#: disagree. Fixed width, so a lexical sort of generation dirs is a chronological one.
+GENERATION_STAMP_FMT = "%Y-%m-%d-%H%M%S"
+
+
+def is_generation_dirname(dirname: str) -> bool:
+    """True for a `<name>@<stamp>` generation directory, never for a skill name."""
+    return GENERATION_SEP in dirname
+
+
+def generation_stamp(generated_at: datetime) -> str:
+    """Render a manifest `generatedAt` as a directory stamp (UTC)."""
+    if generated_at.tzinfo is not None:
+        generated_at = generated_at.astimezone(timezone.utc)
+    return generated_at.strftime(GENERATION_STAMP_FMT)
 
 
 def sanitize_skill_name(raw: str) -> str:

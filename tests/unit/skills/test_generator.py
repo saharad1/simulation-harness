@@ -68,7 +68,7 @@ class TestPipelineDelegation:
         gen = SkillGenerator(api_key=SecretStr("k"))
         with patch.object(G, "run_pipeline", AsyncMock(return_value=BUNDLE)):
             result = await gen.generate_skill(SPEC, "aha", tmp_path)
-        skill_dir = tmp_path / "aha"
+        skill_dir = result.parent   # the generation dir the generator wrote
         assert result == skill_dir / "SKILL.md"
         assert (skill_dir / "SKILL.md").exists()
         assert (skill_dir / "schema.json").exists()
@@ -303,8 +303,8 @@ class TestScenariosJSON:
         )
         with patch.object(G, "run_pipeline", AsyncMock(return_value=bundle)):
             gen = SkillGenerator(api_key=SecretStr("k"))
-            await gen.generate_skill(SPEC, "aha", tmp_path)
-        scenarios = json.loads((tmp_path / "aha" / "scenarios.json").read_text())
+            result = await gen.generate_skill(SPEC, "aha", tmp_path)
+        scenarios = json.loads((result.parent / "scenarios.json").read_text())
         assert scenarios == [{"title": "t", "intent": "i", "operations": []}]
 
     async def test_generate_skill_omits_scenarios_json_when_empty(
@@ -312,5 +312,7 @@ class TestScenariosJSON:
     ) -> None:
         with patch.object(G, "run_pipeline", AsyncMock(return_value=BUNDLE)):
             gen = SkillGenerator(api_key=SecretStr("k"))
-            await gen.generate_skill(SPEC, "aha", tmp_path)
-        assert not (tmp_path / "aha" / "scenarios.json").exists()
+            result = await gen.generate_skill(SPEC, "aha", tmp_path)
+        # Against the dir the generator actually wrote -- a reconstructed flat path would make
+        # this assertion pass vacuously.
+        assert not (result.parent / "scenarios.json").exists()

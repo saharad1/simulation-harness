@@ -69,6 +69,48 @@ The harness is a FastAPI service that, given an OpenAPI spec, spins up an LLM-dr
 ### Skill reuse
 `POST /api/v1/simulation` reuses an existing skill if `<skills_folder>/<name>/SKILL.md` exists. Pass `regenerate_skill: true` to force regeneration. The skills folder defaults to `./skills-store` (per `skills.folder` in `harness.yaml`).
 
+### skills-store layout: generations, the active symlink, and ablations
+A skill name maps to MANY generations on disk; exactly one is active.
+
+```
+skills-store/
+  tau2-retail -> tau2-retail@2026-09-06-095804    # symlink: the ACTIVE generation
+  tau2-retail@2026-09-06-095804/                  # a generation, uniquely named
+      SKILL.md schema.json db.json api.json manifest.json
+      ablations/tau2-retail-minskill/             # leaf keeps the FULL skill name
+  tau2-retail@2026-08-31-104036/                  # previous generation, left in place
+  _archive/                                       # FROZEN pre-generations history
+```
+
+Inspect with **`ls -l skills-store`** — not `ls -F`, which suffixes symlinks with `@` and so
+renders confusingly next to the separator.
+
+- **Stamp** is `%Y-%m-%d-%H%M%S` in **UTC**, rendered from the manifest's `skill.generatedAt`,
+  so the directory name is a view of the manifest rather than a second fact that can disagree.
+- **`@` is the separator** because `sanitize_skill_name` maps everything outside `[a-z0-9]` to
+  `-`, so a skill name can never contain `@`. That makes `is_generation_dirname()` decidable
+  rather than heuristic, which is why a plain `<name>/` directory (a bundle restored over the
+  API, a hand-placed one, a test fixture) still resolves as one unstamped generation. `-` would
+  be ambiguous with the ablation suffixes (`-minskill`, `-bareskill`, …).
+- **Regenerating never destroys the previous generation**; it writes a new directory and
+  repoints the symlink. Rollback is `ln -sfn <older-stamp> <name>`. A failed generation leaves
+  the previous one active.
+- **Ablations nest under the parent generation they were cut from**, so a regenerated parent
+  cannot leave stale variants sitting beside it as equal peers.
+- `_archive/` predates this mechanism. Leave it frozen; don't add to it.
+
+Two rules the design rests on, both enforced in code:
+1. **Never `.resolve()`/`realpath`/`samefile` a skills path.** `SkillRegistry.skill_dir()`
+   returns the unresolved path on purpose: its basename reaches the agent's staging directory
+   and labels the run. `build_skill_sources` raises if a `<name>@<stamp>` path reaches it.
+   `active_generation()` is the one sanctioned place a link is read.
+2. **`GET /api/v1/simulation`'s `name` is always the flat skill name.** The eval repo keys
+   `eval-skills/<name>/` and `artifacts/taubench/<name>/` off it, so a stamped name there
+   would silently misfile every run.
+
+Caveat: `skills-store/<name>` is a symlink, so `rm -rf skills-store/<name>` removes the link
+and orphans its generation — the store then looks empty and the harness boots idle.
+
 ### Error handling
 Domain exceptions in `utils/errors.py` are mapped to HTTP status by handlers in `main.py`:
 - `SimulationAlreadyExistsError`, `PortInUseError` → 409

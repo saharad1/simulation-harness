@@ -43,14 +43,20 @@ def skills_dir(tmp_path: Path) -> Path:
 
 
 async def _generate(skills_dir: Path, bundle: SkillBundle) -> Path:
+    """Generate and return the skill directory the generator actually wrote.
+
+    Taken from the return value rather than rebuilt as `skills_dir / "demo"`: the generator
+    publishes into a timestamped generation dir (`demo@<stamp>`), and reconstructing the name
+    here would duplicate the stamping rule in the test.
+    """
     generator = SkillGenerator(api_key=SecretStr(API_KEY), model="gpt-4o-mini")
     with patch.object(G, "run_pipeline", AsyncMock(return_value=bundle)):
-        await generator.generate_skill(
+        skill_file = await generator.generate_skill(
             openapi_spec=SPEC,
             simulation_name="demo",
             skills_folder=skills_dir,
         )
-    return skills_dir / "demo"
+    return skill_file.parent
 
 
 def _manifest(skill_dir: Path) -> dict[str, Any]:
@@ -121,5 +127,8 @@ async def test_no_manifest_left_behind_on_failure(skills_dir: Path) -> None:
                 skills_folder=skills_dir,
             )
 
+    # Nothing published under the name, and no generation dir either -- a failed generation
+    # must leave the store exactly as it was.
     assert not (skills_dir / "demo").exists()
+    assert list(skills_dir.glob("demo@*")) == []
     assert [d for d in skills_dir.iterdir() if d.name.startswith(".")] == []

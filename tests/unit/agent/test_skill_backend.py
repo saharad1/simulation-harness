@@ -141,3 +141,34 @@ def test_excluding_manifest_leaves_the_source_intact(
     (skill_dir / "manifest.json").write_text('{"manifestVersion": 1}')
     _build(skill_dir, staging_roots)
     assert (skill_dir / "manifest.json").exists()
+
+
+def test_build_skill_sources_rejects_a_generation_directory(tmp_path: Path) -> None:
+    """A stamped dir here would label the run with a directory name.
+
+    deepagents only WARNS when SKILL.md's front-matter `name` disagrees with the directory
+    basename, so this would otherwise complete a run under a mislabeled simulator.
+    """
+    gen = tmp_path / "demo@2026-09-06-095804"
+    gen.mkdir()
+    (gen / "SKILL.md").write_text("---\nname: demo\n---\n# demo\n")
+
+    from simulation_harness.agent.skill_backend import build_skill_sources
+
+    with pytest.raises(ValueError, match="flat-named path"):
+        build_skill_sources(gen)
+
+
+def test_build_skill_sources_excludes_ablations(tmp_path: Path) -> None:
+    """A parent's ablated variants are other conditions -- never shown to the agent."""
+    skill = tmp_path / "demo"
+    (skill / "ablations" / "demo-minskill").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\n---\n# demo\n")
+    (skill / "ablations" / "demo-minskill" / "SKILL.md").write_text("# thinner\n")
+
+    from simulation_harness.agent.skill_backend import build_skill_sources
+
+    root, _ = build_skill_sources(skill)
+
+    assert not (Path(root) / ".skills" / "demo" / "ablations").exists()
+    assert (Path(root) / ".skills" / "demo" / "SKILL.md").exists()

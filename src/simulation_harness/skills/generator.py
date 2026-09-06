@@ -17,9 +17,11 @@ from simulation_harness.skills.manifest import MANIFEST_FILENAME, build_manifest
 # Backward-compat re-export: these moved to skills.generation.naming, but
 # tests/unit/skills/test_generator.py imports them from this module.
 from simulation_harness.skills.generation.naming import (
+    GENERATION_SEP,
     _FRONTMATTER_RE,
     _NAME_LINE_RE,
     _force_skill_name,
+    generation_stamp,
 )
 
 # Declared so the re-exports above read as intentional API rather than dead
@@ -95,8 +97,9 @@ class SkillGenerator:
                 original exception via ``__cause__``).
         """
         temp_dir = skills_folder / f".{simulation_name}.tmp-{uuid.uuid4().hex[:8]}"
-        final_dir = skills_folder / simulation_name
-        skill_file = final_dir / "SKILL.md"
+        # The generation timestamp is decided up front so the manifest and the directory name
+        # it is rendered into cannot disagree.
+        generated_at = datetime.now(timezone.utc)
         try:
             temp_dir.mkdir(parents=True, exist_ok=True)
             bundle = await run_pipeline(
@@ -126,17 +129,27 @@ class SkillGenerator:
                 openapi_spec=openapi_spec,
                 model=self.model,
                 harness_version=__version__,
-                generated_at=datetime.now(timezone.utc),
+                generated_at=generated_at,
                 identity_provenance=bundle.identity_provenance,
             )
             (temp_dir / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
-            try:
-                temp_dir.rename(final_dir)
-            except (FileExistsError, OSError):
-                if final_dir.exists():
-                    shutil.rmtree(final_dir)
-                temp_dir.rename(final_dir)
-            return skill_file
+            # Publish into a directory named for THIS generation. The target never pre-exists,
+            # so there is nothing to clobber and no fallback to write: the previous code caught
+            # the rename failure and `rmtree`'d whatever sat at `<name>`, which destroyed the
+            # prior generation on every regeneration -- and, once `<name>` became a symlink,
+            # failed outright (rename gives ENOTDIR, then rmtree refuses a symlink) while
+            # discarding the freshly generated bundle.
+            final_dir = skills_folder / (
+                f"{simulation_name}{GENERATION_SEP}{generation_stamp(generated_at)}"
+            )
+            if final_dir.exists():
+                # Two generations inside one second. Rare, but the stamp is second-resolution
+                # and a collision would otherwise be an ENOTEMPTY at the very last step.
+                final_dir = final_dir.with_name(
+                    f"{final_dir.name}-{uuid.uuid4().hex[:8]}"
+                )
+            temp_dir.rename(final_dir)
+            return final_dir / "SKILL.md"
         except Exception as e:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
