@@ -68,7 +68,7 @@ class TestPipelineDelegation:
         gen = SkillGenerator(api_key=SecretStr("k"))
         with patch.object(G, "run_pipeline", AsyncMock(return_value=BUNDLE)):
             result = await gen.generate_skill(SPEC, "aha", tmp_path)
-        skill_dir = result.parent   # the generation dir the generator wrote
+        skill_dir = result.parent  # the generation dir the generator wrote
         assert result == skill_dir / "SKILL.md"
         assert (skill_dir / "SKILL.md").exists()
         assert (skill_dir / "schema.json").exists()

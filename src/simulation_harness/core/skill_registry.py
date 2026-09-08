@@ -2,9 +2,7 @@
 
 import json
 import os
-import shutil
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +10,6 @@ import jsonschema
 
 from simulation_harness.skills.generation.naming import (
     GENERATION_SEP,
-    generation_stamp,
     is_generation_dirname,
     split_generation_dirname,
 )
@@ -128,7 +125,11 @@ class SkillRegistry:
         # an ablation (`<parent>/ablations/../..` would escape the store); it falls through to
         # the top-level join, which is what this did for every name before nesting existed --
         # so this adds no traversal surface, it just declines to widen it.
-        if "/" in simulation_name or "\\" in simulation_name or simulation_name in (".", ".."):
+        if (
+            "/" in simulation_name
+            or "\\" in simulation_name
+            or simulation_name in (".", "..")
+        ):
             return top
         # Ablations are reached through their parent's NEWEST generation only. Every generation
         # keeps its own `ablations/`; resolving into a stale one would score an old variant
@@ -344,7 +345,9 @@ class SkillRegistry:
                 names.extend(
                     a.name
                     for a in sorted(ablations.iterdir())
-                    if a.is_dir() and not a.name.startswith(".") and self.is_complete(a.name)
+                    if a.is_dir()
+                    and not a.name.startswith(".")
+                    and self.is_complete(a.name)
                 )
         return sorted(names)
 

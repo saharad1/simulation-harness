@@ -69,7 +69,7 @@ class TestApiJsonStorage:
                 skills_folder=temp_skills_dir,
             )
 
-        skill_dir = skill_file.parent   # the generation dir the generator wrote
+        skill_dir = skill_file.parent  # the generation dir the generator wrote
         api_json_path = skill_dir / "api.json"
         assert api_json_path.exists(), "api.json file should be created"
         assert json.loads(api_json_path.read_text()) == sample_openapi_spec
@@ -90,7 +90,7 @@ class TestApiJsonStorage:
                 skills_folder=temp_skills_dir,
             )
 
-        skill_dir = skill_file.parent   # the generation dir the generator wrote
+        skill_dir = skill_file.parent  # the generation dir the generator wrote
         api_json_content = json.loads((skill_dir / "api.json").read_text())
         assert isinstance(api_json_content, dict)
         assert api_json_content["openapi"] == "3.0.0"
@@ -176,7 +176,7 @@ class TestApiJsonStorage:
                 skills_folder=temp_skills_dir,
             )
 
-        skill_dir = skill_file.parent   # the generation dir the generator wrote
+        skill_dir = skill_file.parent  # the generation dir the generator wrote
         api_json_content = json.loads((skill_dir / "api.json").read_text())
 
         assert api_json_content == complex_spec
