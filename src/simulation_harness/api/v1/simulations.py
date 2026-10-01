@@ -398,6 +398,64 @@ async def get_simulation_state(
 
 
 @router.get(
+    "/simulation/usage",
+    status_code=status.HTTP_200_OK,
+    summary="Get cumulative LLM usage for the active simulation",
+    description=(
+        "Token counts and LLM wall-time spent by the simulator since the last reset, plus "
+        "the model that spent them. Cumulative and monotonic: bracket a task with two reads "
+        "and subtract to get that task's bill. Deliberately NOT attached to tool responses, "
+        "which consumers diff. Survives `POST /simulation/reset` (resetting the world does "
+        "not un-spend tokens); zero it with `DELETE /simulation/usage`."
+    ),
+    responses={
+        404: {"description": "No simulation exists"},
+        503: {"description": "Simulation exists but is not ready yet"},
+    },
+)
+async def get_simulation_usage(
+    simulation_host: SimulationHostDep,
+) -> dict[str, Any]:
+    record = await simulation_host.get_record()
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No simulation found",
+        )
+    if record.status != SimulationStatus.READY or record.instance is None:
+        raise SimulationNotReadyError(name=record.name, status=record.status.value)
+    return record.instance.get_usage()
+
+
+@router.delete(
+    "/simulation/usage",
+    status_code=status.HTTP_200_OK,
+    summary="Reset cumulative LLM usage counters",
+    description=(
+        "Zero the usage counters. Intended at the start of a measured task, so that the "
+        "task's bill is readable from a single later GET even if the opening read was lost."
+    ),
+    responses={
+        404: {"description": "No simulation exists"},
+        503: {"description": "Simulation exists but is not ready yet"},
+    },
+)
+async def reset_simulation_usage(
+    simulation_host: SimulationHostDep,
+) -> dict[str, Any]:
+    record = await simulation_host.get_record()
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No simulation found",
+        )
+    if record.status != SimulationStatus.READY or record.instance is None:
+        raise SimulationNotReadyError(name=record.name, status=record.status.value)
+    record.instance.reset_usage()
+    return record.instance.get_usage()
+
+
+@router.get(
     "/simulation/database",
     status_code=status.HTTP_200_OK,
     summary="Get on-disk database (db.json) for the active skill",

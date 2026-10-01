@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -150,16 +151,28 @@ class SimulationInstance:
 
             # Execute tool normally
             try:
+                started = time.perf_counter()
                 response = await self._agent.generate_response(tool_name, arguments)
+                duration_ms = int((time.perf_counter() - started) * 1000)
                 content = json.dumps(response)
 
                 # Update session state on success
                 self._tool_call_count += 1
                 self._last_activity = datetime.now(timezone.utc)
 
-                logger.debug(
-                    f"Tool executed successfully: tool={tool_name}, "
-                    f"count={self._tool_call_count}"
+                # Token usage of the LLM call(s) this tool call made. REQUIREMENTS.md §2.4
+                # specifies a `token_usage` field on the per-call line; until the usage meter
+                # existed there was nothing to put in it, so the field was declared and never
+                # filled. (The full `log_tool_call` signature also wants `transport`, which is
+                # not known at this layer — the instance is called identically by both
+                # transports — so the counts are logged here rather than through that helper.)
+                logger.info(
+                    "Tool executed successfully: tool=%s, count=%s, duration_ms=%s, "
+                    "token_usage=%s",
+                    tool_name,
+                    self._tool_call_count,
+                    duration_ms,
+                    getattr(self._agent, "last_call_usage", None),
                 )
 
                 return ToolCallResult(
@@ -227,6 +240,24 @@ class SimulationInstance:
         self._last_activity = None  # Timer starts on first call after reset
         await self._agent.reset()
         logger.info("Session reset")
+
+    def get_usage(self) -> dict[str, Any]:
+        """Cumulative LLM usage for this simulation (see agent/usage.py).
+
+        Read twice around a task and subtracted, this is that task's token bill. Survives
+        ``reset_session``: the world going back to its seed does not un-spend the tokens, and a
+        caller that reseeds between tasks would otherwise measure every task as free.
+        """
+        if not hasattr(self, "_agent"):
+            return {}
+        meter = getattr(self._agent, "usage", None)
+        return meter.snapshot() if meter is not None else {}
+
+    def reset_usage(self) -> None:
+        """Zero the usage counters. Only from an explicit API request."""
+        meter = getattr(getattr(self, "_agent", None), "usage", None)
+        if meter is not None:
+            meter.reset()
 
     def get_state_snapshot(self, thread_id: str = "default") -> dict[str, Any]:
         """Get state snapshot for a thread.
