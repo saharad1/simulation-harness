@@ -363,6 +363,42 @@ class TestGetSimulation:
         assert data["mcp_url"] is None
         assert "progress" in data
 
+    async def test_get_simulation_models_unknown_without_config(
+        self, client: TestClient, mock_simulation_host: MagicMock
+    ) -> None:
+        """No loaded config reports the models as unknown (None), never as a default."""
+        record = SimulationRecord.declare(name="test-api")
+        mock_simulation_host.get_record = AsyncMock(return_value=record)
+
+        data = client.get("/api/v1/simulation").json()
+
+        assert data["models"] == {"simulation": None, "skill_generation": None}
+
+    async def test_get_simulation_reports_configured_models(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The status payload carries the simulation and generation models of this process."""
+        cfg = MagicMock()
+        cfg.ablation.skill, cfg.ablation.state = True, True
+        cfg.llm.temperature, cfg.llm.max_tokens = 0.0, None
+        cfg.llm.simulation_model = "weak/sim-model"
+        cfg.llm.skill_generation_model = "strong/gen-model"
+        monkeypatch.setattr(
+            "simulation_harness.api.v1.simulations.get_config", lambda: cfg
+        )
+        record = SimulationRecord.declare(name="test-api")
+        mock_simulation_host.get_record = AsyncMock(return_value=record)
+
+        data = client.get("/api/v1/simulation").json()
+
+        assert data["models"] == {
+            "simulation": "weak/sim-model",
+            "skill_generation": "strong/gen-model",
+        }
+
     async def test_get_simulation_ready_returns_session_state_and_mcp_url(
         self,
         client: TestClient,

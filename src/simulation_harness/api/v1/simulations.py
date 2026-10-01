@@ -63,7 +63,7 @@ def _record_to_response(
     # `sampling` rides along for the same reason, with one difference: an unknown temperature is
     # reported as None, not as the 0 default. Defaulting it would let a run whose harness could not
     # read its config be recorded as greedy, which is exactly the mislabel a determinism study
-    # cannot tolerate.
+    # cannot tolerate. `models` follows the same rule: an unknown model is None, never the default.
     try:
         _cfg = get_config()
         _abl = _cfg.ablation
@@ -71,9 +71,14 @@ def _record_to_response(
         sampling: dict[str, Optional[float]] = {"temperature": _cfg.llm.temperature}
         if _cfg.llm.max_tokens is not None:
             sampling["max_tokens"] = float(_cfg.llm.max_tokens)
+        models: dict[str, Optional[str]] = {
+            "simulation": _cfg.llm.simulation_model,
+            "skill_generation": _cfg.llm.skill_generation_model,
+        }
     except RuntimeError:
         components = {"skill": True, "state": True}
         sampling = {"temperature": None}
+        models = {"simulation": None, "skill_generation": None}
     progress = ProgressPayload(
         phase=record.progress.phase,
         started_at=record.progress.started_at,
@@ -98,6 +103,7 @@ def _record_to_response(
             created_at=record.created_at,
             components=components,
             sampling=sampling,
+            models=models,
             progress=progress,
             error=error,
         )
@@ -110,6 +116,7 @@ def _record_to_response(
         created_at=record.created_at,
         components=components,
         sampling=sampling,
+        models=models,
         progress=progress,
         error=error,
     )

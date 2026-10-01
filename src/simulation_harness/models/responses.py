@@ -67,6 +67,16 @@ class SimulationResponse(BaseModel):
         "could not tell a sampled run from a greedy one after the fact. None means the harness "
         "could not read its config, which is reported as unknown rather than assumed to be 0.",
     )
+    models: dict[str, Optional[str]] = Field(
+        default_factory=lambda: cast(
+            "dict[str, Optional[str]]",
+            {"simulation": None, "skill_generation": None},
+        ),
+        description="LLM model ids this process is configured with: `simulation` (every "
+        "tools/call) and `skill_generation` (one-time, per spec). Exposed for the same reason as "
+        "`sampling` — two runs that differ only in the simulator model are otherwise "
+        "indistinguishable in their artifacts. None means the harness could not read its config.",
+    )
     progress: ProgressPayload = Field(..., description="Creation progress info")
     error: Optional[ErrorPayload] = Field(
         None, description="Failure details — populated only when status=failed."
