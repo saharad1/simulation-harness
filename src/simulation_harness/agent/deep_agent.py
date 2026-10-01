@@ -6,6 +6,7 @@ LangChain and LangGraph directly (without the deepagents library).
 
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from simulation_harness.utils.logging import get_logger
 from simulation_harness.agent.prompts import render_system_prompt
 from simulation_harness.agent.session_manager import SessionManager
 from simulation_harness.agent.skill_backend import build_skill_sources
+from simulation_harness.agent.usage import UsageMeter
 
 logger = get_logger(__name__)
 
@@ -88,6 +90,15 @@ class DeepAgent:
         self.skill_dir = skill_dir
         self.skill_name = skill_name
         self.agent_recursion_limit = agent_recursion_limit
+
+        # Cumulative LLM spend for this simulation, read over the API as
+        # /api/v1/simulation/usage. Lives on the agent because the agent is what makes the
+        # LLM calls; the instance only forwards.
+        self.usage = UsageMeter()
+        self._model_name = model
+        # Usage of the most recent LLM call, for the per-call log line. None until the first
+        # call, so a log emitted before any generation says "unknown" rather than "free".
+        self.last_call_usage: dict[str, int] | None = None
 
         # Per-simulation staging dir for the skills backend, created lazily in
         # _create_agent and removed in shutdown().
@@ -264,10 +275,22 @@ class DeepAgent:
             if self.store_registry:
                 config["configurable"]["store_registry"] = self.store_registry
 
-            # Generate response using agent with session context
+            # Generate response using agent with session context.
+            # Timed and metered: this await is where every simulated token is spent, and the
+            # usage is otherwise unrecoverable from outside the process (the tool response
+            # deliberately carries none). `record` counts only the messages this call added —
+            # with a checkpointer, `result["messages"]` is the whole thread history.
+            _t0 = time.perf_counter()
             result = await self.agent.ainvoke(
                 {"messages": [HumanMessage(content=request_prompt)]},
                 config=config,
+            )
+            _llm_seconds = time.perf_counter() - _t0
+            self.last_call_usage = self.usage.record(
+                result.get("messages") if isinstance(result, dict) else None,
+                thread_id=effective_thread_id,
+                seconds=_llm_seconds,
+                model=self._model_name,
             )
 
             # Extract the output from the last message
@@ -381,6 +404,11 @@ class DeepAgent:
             # Reset store for this thread if registry exists
             if self.store_registry:
                 self.store_registry.reset(thread_id)
+
+            # The history this thread's usage mark pointed into is gone; the mark must go with
+            # it or the next turns would be counted as already accounted for. Spend is kept —
+            # resetting the world does not un-spend tokens.
+            self.usage.forget_thread(thread_id)
         else:
             # Reset all sessions
             count = self.session_manager.clear_all_sessions()
@@ -389,6 +417,8 @@ class DeepAgent:
             # Drop all stores if registry exists
             if self.store_registry:
                 self.store_registry.drop_all()
+
+            self.usage.forget_thread()      # every history cleared; spend kept
 
     async def shutdown(self) -> None:
         """Shutdown the agent and cleanup resources."""
