@@ -12,7 +12,12 @@ try:
 except ImportError:  # pragma: no cover
     from importlib_resources import files  # type: ignore[import-not-found]
 
-from simulation_harness.skills.generation.ir import SpecModel
+from simulation_harness.skills.generation.ir import (
+    ElementField,
+    ElementShape,
+    Entity,
+    SpecModel,
+)
 from simulation_harness.skills.generation.llm import call_json
 from simulation_harness.skills.generation.repair import with_repair
 
@@ -112,6 +117,18 @@ def validate_schema(schema: dict, ir: SpecModel | None = None) -> list[str]:
                 f"$defs/{def_name} must declare the primary-key property "
                 f"'{pk}' for collection '{collection}'"
             )
+        pk_prop = (entity_def.get("properties") or {}).get(pk) if pk else None
+        if isinstance(pk_prop, dict) and (
+            pk_prop.get("type") in ("array", "object")
+            or isinstance(pk_prop.get("items"), dict)
+            or isinstance(pk_prop.get("properties"), dict)
+        ):
+            errors.append(
+                f"$defs/{def_name} declares primary key '{pk}' for collection "
+                f"'{collection}', but that property is not scalar. The runtime keys "
+                f"rows by str(pk_value), so a list- or object-valued key silently "
+                f"becomes a stringified value."
+            )
         def_collections.setdefault(def_name, []).append(collection)
     for def_name, collections in def_collections.items():
         pks = {ir.store_metadata.pk_map.get(c) for c in collections}
@@ -122,6 +139,96 @@ def validate_schema(schema: dict, ir: SpecModel | None = None) -> list[str]:
                 f"each needs its own $def, or the primary keys must match"
             )
     return errors
+
+
+def _object_element(fields: tuple[ElementField, ...]) -> dict:
+    """An object subschema for the element, with `required` where declared.
+
+    `required` is what turns a type check into a shape check. Without it a seeded
+    element may omit fields the response promises and still validate — retail's
+    `products[].variants` was seeded as a flattened `{color, size, price,
+    available}`, matching neither the spec's variant nor the `items` row it
+    duplicates, and passed. `additionalProperties` stays open: an element may carry
+    storage bookkeeping no response declares, and unlike a top-level entity there
+    is no union across sources to make closing it safe.
+    """
+    subschema: dict = {
+        "type": "object",
+        "properties": {f.name: {"type": f.type} for f in fields},
+    }
+    required = [f.name for f in fields if f.required]
+    if required:
+        subschema["required"] = required
+    return subschema
+
+
+def _element_items(shape: ElementShape) -> dict | None:
+    """The ``items`` subschema for one derived element shape, or ``None``.
+
+    ``additionalProperties`` is deliberately left open on object elements. The
+    fix this supports only needs the element's *type* pinned — a bare id string
+    where an object is required fails on ``"type"`` alone — and storage may
+    legitimately carry bookkeeping fields no response declares, which for a
+    nested element there is no union-across-sources to make safe.
+    """
+    if shape.kind == "scalar":
+        return {"type": shape.type} if shape.type else None
+    if shape.kind == "embedded":
+        return _object_element(shape.fields)
+    if shape.kind == "reference":
+        if not shape.link_fields:
+            # A pure projection of the target: the parent stores identifiers, and
+            # a primary key is a string by the schema stage's own contract.
+            return {"type": "string"}
+        return _object_element(shape.link_fields)
+    return None
+
+
+# Where a container's element subschema belongs, and the declared `type` that has
+# to be there for the stamp to apply.
+_CONTAINER_KEYWORD = {
+    "array": ("items", "array"),
+    "map": ("additionalProperties", "object"),
+}
+
+
+def _stamp_element_shapes(entity_def: dict, entity: Entity) -> None:
+    """Write each derived element shape onto its container property.
+
+    ``items`` for an array, ``additionalProperties`` for a map. Skips a property
+    whose declared type does not match the container the shape was derived from:
+    getting that wrong is a pre-existing shape problem for ``validate_schema`` to
+    report, and stamping over it would bury the real problem.
+    """
+    props = entity_def.get("properties")
+    if not isinstance(props, dict):
+        return
+    for field in entity.fields:
+        if field.element is None:
+            continue
+        keyword_type = _CONTAINER_KEYWORD.get(field.element.container)
+        if keyword_type is None:
+            continue
+        keyword, declared = keyword_type
+        prop = props.get(field.name)
+        if not isinstance(prop, dict) or prop.get("type") != declared:
+            continue
+        items = _element_items(field.element)
+        if items is None:
+            continue
+        prop[keyword] = items
+        element = field.element
+        if element.target_collection is not None:
+            # Recorded so the operation stage can see which collection an
+            # identifier points at; validators ignore `x-` keywords. `field` is
+            # present when the element's own key name differs from the target's.
+            ref: dict = {
+                "collection": element.target_collection,
+                "key": element.target_key,
+            }
+            if element.local_key is not None:
+                ref["field"] = element.local_key
+            prop["x-element-ref"] = ref
 
 
 def enforce_contract(schema: dict, ir: SpecModel) -> dict:
@@ -136,7 +243,7 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
     shape falls through to ``validate_schema`` as repair feedback instead of
     an exception escaping the repair loop.
 
-    Stamps two things:
+    Stamps three things:
     - Top level: ``required`` is set to exactly ``store_metadata.collections``
       and ``additionalProperties`` to ``False``, so ``db.json``'s collection
       set is checked against the IR too (via ``validate_schema_and_db``, in
@@ -145,10 +252,17 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
     - Per collection: the primary key is written onto the ``$def`` the
       collection's items ``$ref`` resolves to (where the runtime reads it
       from), and added to that ``$def``'s ``required`` list.
+    - Per array field with a derived element shape: that field's ``items``. The
+      prompt cannot transcribe an element shape it was never given, and until it
+      is stamped ``items`` stays ``{}``, which accepts anything — so the seed
+      stage is free to populate an array in a shape no other stage agreed to.
+      Stamping it makes ``validate_schema_and_db`` reject the mismatch and feed
+      it back as repair feedback, with no seed-prompt change at all.
     """
     if isinstance(schema, dict):
         schema["required"] = list(ir.store_metadata.collections)
         schema["additionalProperties"] = False
+    entities = {e.collection: e for e in ir.entities}
     for collection, pk in ir.store_metadata.pk_map.items():
         _, entity_def = _resolve_def(schema, collection)
         if entity_def is None:
@@ -157,6 +271,9 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
         required = entity_def.setdefault("required", [])
         if isinstance(required, list) and pk not in required:
             required.append(pk)
+        entity = entities.get(collection)
+        if entity is not None:
+            _stamp_element_shapes(entity_def, entity)
     return schema
 
 
