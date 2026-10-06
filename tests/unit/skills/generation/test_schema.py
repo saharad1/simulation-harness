@@ -294,3 +294,18 @@ def test_validate_schema_rejects_a_shared_def_with_differing_primary_keys() -> N
 def test_validate_schema_accepts_a_shared_def_with_the_same_primary_key() -> None:
     errors = S.validate_schema(_shared_def_schema(), _shared_def_ir(same_pk=True))
     assert errors == []
+
+
+def test_enforce_contract_stamps_the_composed_key_recipe() -> None:
+    ir = _shop_ir()
+    ir.entities[0] = ir.entities[0].model_copy(
+        update={"key_fields": ["shop_id", "order_no"]}
+    )
+    order = S.enforce_contract(_order_schema(), ir)["$defs"]["Order"]
+    assert order["x-key-fields"] == ["shop_id", "order_no"]
+    assert order["x-key-separator"] == "|"
+
+
+def test_enforce_contract_adds_no_key_recipe_for_a_plain_key() -> None:
+    order = S.enforce_contract(_order_schema(), _shop_ir())["$defs"]["Order"]
+    assert "x-key-fields" not in order

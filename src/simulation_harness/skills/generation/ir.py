@@ -125,6 +125,12 @@ class Scenario(BaseModel):
     operations: list[str] = []
 
 
+#: Joins the ``key_fields`` values of a composed key, in ``key_fields`` order.
+#: Fixed here rather than chosen per skill so every consumer of ``x-key-fields``
+#: (the simulator, a seed loader, an external evaluator) builds the same value.
+KEY_SEPARATOR = "|"
+
+
 class Entity(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -134,6 +140,11 @@ class Entity(BaseModel):
     relationships: list[Relationship] = []
     fingerprint_fields: list[str] = []
     temporal_fields: list[str] = []
+    # Set when no single field identifies an instance and the API names one by a
+    # combination of fields. ``primary_key`` is then a string field holding those
+    # values joined by KEY_SEPARATOR, so the store keeps its one-field key and
+    # nothing downstream has to learn tuples.
+    key_fields: list[str] = []
 
 
 class Operation(BaseModel):

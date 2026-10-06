@@ -432,6 +432,7 @@ async def test_analyze_prefers_components_over_inline() -> None:
         retries: Any,
         derived: Any = None,
         array_shaped: Any = frozenset(),
+        addressing: Any = None,
     ) -> Any:
         captured["source"] = source
         return _dm()
@@ -536,6 +537,7 @@ async def test_analyze_hands_the_whole_enrich_map_when_nothing_is_derived() -> N
         retries: Any,
         derived: Any = None,
         array_shaped: Any = frozenset(),
+        addressing: Any = None,
     ) -> Any:
         captured["source"] = source
         captured["derived"] = derived
@@ -812,6 +814,7 @@ async def test_analyze_hands_only_undecidable_schemas_to_the_fallback() -> None:
         retries: Any,
         derived: Any = None,
         array_shaped: Any = frozenset(),
+        addressing: Any = None,
     ) -> Any:
         captured["source"] = source
         captured["derived"] = derived
