@@ -13,6 +13,7 @@ from simulation_harness.skills.generation.stages.analyze.identity import (
     derive_identity,
     identity_key,
     noun_for,
+    operations_name,
     pluralize,
     singularize,
     snake,
@@ -744,9 +745,11 @@ def test_rule_four_declines_a_foreign_key_at_element_level() -> None:
     assert identity_key("payment_history", element, synthetic=True, nested=True) is None
 
 
-def test_rule_four_keeps_an_own_id_at_element_level() -> None:
-    """tau2-airline: payment_id in a payment_history line item IS its identity.
-    This is the regression guard for the airline contract."""
+def test_rule_four_keeps_a_stem_id_at_element_level_without_operation_evidence() -> (
+    None
+):
+    """With no operation ids supplied, the name stem alone decides: payment_id in a
+    payment_history line item is adopted as its own identity."""
     element: dict = {
         "properties": {"payment_id": {"type": "string"}, "amount": {"type": "number"}}
     }
@@ -754,6 +757,97 @@ def test_rule_four_keeps_an_own_id_at_element_level() -> None:
         identity_key("payment_history", element, synthetic=True, nested=True)
         == "payment_id"
     )
+
+
+def test_rule_four_needs_an_operation_about_the_noun_at_element_level() -> None:
+    """Given operation evidence, a stem id is adopted only if some operation is about
+    the noun; otherwise it is a value embedded in its parent (tau2-airline)."""
+    element: dict = {
+        "properties": {"payment_id": {"type": "string"}, "amount": {"type": "number"}}
+    }
+    none_about_it = ["book_reservation", "update_reservation_flights"]
+    one_about_it = none_about_it + ["get_payment_details"]
+    assert (
+        identity_key(
+            "payment_history",
+            element,
+            synthetic=True,
+            nested=True,
+            addressed=lambda n: operations_name(n, none_about_it),
+        )
+        is None
+    )
+    assert (
+        identity_key(
+            "payment_history",
+            element,
+            synthetic=True,
+            nested=True,
+            addressed=lambda n: operations_name(n, one_about_it),
+        )
+        == "payment_id"
+    )
+
+
+def test_operation_evidence_does_not_touch_top_level_rule_four() -> None:
+    schema: dict = {
+        "properties": {"tracking_id": {"type": "string"}, "status": {"type": "string"}}
+    }
+    assert (
+        identity_key(
+            "get_shipping_label__response",
+            schema,
+            synthetic=True,
+            addressed=lambda n: False,
+        )
+        == "tracking_id"
+    )
+
+
+@pytest.mark.parametrize(
+    ("noun", "ops", "expected"),
+    [
+        ("payment", ["get_payment"], True),
+        ("payment", ["list_payments"], True),
+        ("payment", ["refundPayment"], True),
+        ("payment", ["book_reservation", "cancel_reservation"], False),
+        ("order_item", ["get_order_item"], True),
+        ("order_item", ["get_order", "get_item"], False),
+        ("", ["get_payment"], False),
+    ],
+)
+def test_operations_name(noun: str, ops: list[str], expected: bool) -> None:
+    assert operations_name(noun, ops) is expected
+
+
+def test_derive_identity_drops_an_unaddressed_element_collection() -> None:
+    """End to end through derive_identity: the element collection exists only when
+    some operation is about it, and the parent keeps the list either way."""
+    reservation = {
+        "type": "object",
+        "properties": {
+            "reservation_id": {"type": "string"},
+            "payment_history": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "payment_id": {"type": "string"},
+                        "amount": {"type": "integer"},
+                    },
+                },
+            },
+        },
+    }
+    schemas = {"get_reservation__response": reservation}
+    before = derive_identity(schemas, synthetic=True)
+    after = derive_identity(
+        schemas, synthetic=True, operation_ids=["get_reservation", "cancel_reservation"]
+    )
+    assert before.collections == ["payments", "reservations"]
+    assert after.collections == ["reservations"]
+    (res,) = after.entities
+    assert "payment_history" in dict(res.fields)
 
 
 def test_rule_four_is_unchanged_at_top_level() -> None:

@@ -112,6 +112,54 @@ def caller_gate_violations(section: str) -> list[str]:
     ]
 
 
+def _subsection(section: str, heading: str) -> str:
+    """The body of one ``###`` subsection, up to the next heading."""
+    start = section.find(heading)
+    if start < 0:
+        return ""
+    body = section[start + len(heading) :]
+    nxt = body.find("\n###")
+    return body if nxt < 0 else body[:nxt]
+
+
+_FIELD_REF = re.compile(r"`([A-Z]\w*)\.(\w+)[^`]*`")
+# Arithmetic that manufactures a value rather than relating real ones.
+_GENERATOR = re.compile(r"\bmod\b|\bhash|\bdigits?\b|\bseed\b|\brandom", re.IGNORECASE)
+_UNSEEDED = re.compile(r"\bunseeded\b", re.IGNORECASE)
+
+
+def stored_field_derivation_violations(section: str, ir: SpecModel) -> list[str]:
+    """Derivation Rules that manufacture a value the store already holds.
+
+    The section is the skill's single source of truth for numbers, so a
+    generator formula for a *stored* field overrides seeded data at runtime:
+    observed on tau2-airline, where the store held the real fares and the
+    simulator answered with `49 + (digits mod 351)` fares instead.
+
+    Narrow on purpose: only generator arithmetic (mod, hash, digits, seed,
+    random) applied to a stored ``Entity.field``, and not marked ``unseeded``.
+    A broader "no assignment to a stored field" test was measured on the 17
+    skills on disk and flagged legitimate copy, key-recipe and write-time rules
+    (retail's ``exchange_price_difference``); this form flagged only the
+    fabricated airline fare and seat rules, and nothing in any retail skill.
+    Detected in code for the same reason as :func:`caller_gate_violations`.
+    """
+    stored = {(e.name, f.name) for e in ir.entities for f in e.fields}
+    out = []
+    for bullet in _bullets(_subsection(section, "### Derivation Rules")):
+        if _UNSEEDED.search(bullet) or not _GENERATOR.search(bullet):
+            continue
+        refs = {(m.group(1), m.group(2)) for m in _FIELD_REF.finditer(bullet)}
+        if refs & stored:
+            out.append(
+                "rule generates a value the store already holds, so it would override "
+                "seeded data: read stored fields instead, drop fixed offsets between "
+                "stored values that only serve this formula, and put generation for "
+                f"absent values under On-Demand Generation Rules as 'unseeded': {bullet[:160]!r}"
+            )
+    return out
+
+
 async def generate_behavior(ir: SpecModel, llm, *, retries: int) -> str:
     prompt = _load_prompt()
     base_user = (
@@ -135,6 +183,7 @@ async def generate_behavior(ir: SpecModel, llm, *, retries: int) -> str:
         if not section.strip():
             errors.append("behavior section must not be empty")
         errors.extend(caller_gate_violations(section))
+        errors.extend(stored_field_derivation_violations(section, ir))
         return errors
 
     return await with_repair(produce, validate, stage="behavior", retries=retries)
