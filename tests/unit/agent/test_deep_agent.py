@@ -353,6 +353,60 @@ def test_stateful_branch_wires_lean_create_agent_with_skills(
     assert mock_create_agent.call_args.args[0] is mock_chat_openai.return_value
 
 
+def test_no_skill_branch_puts_raw_spec_in_prompt_and_stages_no_skill(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """skill_enabled=False (the `no_skill` ablation): state tools only, no skill middleware,
+    nothing staged, and the raw spec -- not a pointer to a skill -- in the system prompt.
+
+    Guards the failure this flag was added for: the toggle was reported in the status endpoint
+    but never applied, so a `no_skill` harness silently served the full skill.
+    """
+    skill_dir = tmp_path / "petstore"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: petstore\ndescription: Simulate the Pet Store API.\n---\n# SKILL-BODY\n"
+    )
+    mock_spec.spec_dict = {
+        "openapi": "3.0.0",
+        "paths": {"/pets/{petId}": {"get": {"operationId": "getPetByIdMarker"}}},
+    }
+
+    with (
+        patch("simulation_harness.agent.deep_agent.ChatOpenAI") as mock_chat_openai,
+        patch("simulation_harness.agent.deep_agent.StoreRegistry"),
+        patch(
+            "simulation_harness.agent.deep_agent.create_state_tools", return_value=[]
+        ),
+        patch(
+            "simulation_harness.agent.deep_agent.create_agent",
+            return_value=Mock(),
+        ) as mock_create_agent,
+    ):
+        mock_chat_openai.return_value = Mock()
+        agent = DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+            skill_dir=skill_dir,
+            skill_enabled=False,
+        )
+
+    kwargs = mock_create_agent.call_args.kwargs
+    assert "middleware" not in kwargs or not kwargs["middleware"]
+    assert agent._skill_staging_dir is None
+    assert kwargs["system_prompt"] == agent.system_prompt
+    assert "getPetByIdMarker" in agent.system_prompt
+    assert "simulation skill" not in agent.system_prompt
+    assert "SKILL-BODY" not in agent.system_prompt
+    # The store is untouched by the ablation.
+    assert agent.store_registry is not None
+
+
 @pytest.mark.asyncio
 async def test_shutdown_removes_skill_staging_dir(
     tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock

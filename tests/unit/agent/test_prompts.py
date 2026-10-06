@@ -40,3 +40,20 @@ def test_render_does_not_embed_per_operation_detail() -> None:
     result = render_system_prompt(_mock_spec())
     assert "/users/{id}" not in result
     assert "getUser" not in result
+
+
+def test_render_raw_spec_replaces_skill_pointer() -> None:
+    """`no_skill`: the raw spec is embedded and every pointer to a skill is gone."""
+    result = render_system_prompt(
+        _mock_spec(), raw_spec='{"paths": {"/x": "RAWSPECMARKER"}}'
+    )
+    assert "RAWSPECMARKER" in result
+    assert "skill" not in result.lower()
+    assert "state_get" in result  # the store mechanism is unaffected
+
+
+def test_render_without_raw_spec_is_unchanged_by_the_flag() -> None:
+    """Passing no raw_spec must render exactly what the method always rendered."""
+    assert render_system_prompt(_mock_spec()) == render_system_prompt(
+        _mock_spec(), raw_spec=None
+    )

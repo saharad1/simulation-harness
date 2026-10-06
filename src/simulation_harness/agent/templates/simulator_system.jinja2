@@ -10,6 +10,19 @@ You intercept API calls and generate realistic, consistent mock responses that m
 **Version**: {{ api_info.version }}
 **Description**: {{ api_info.description }}
 
+{% if raw_spec %}
+## API Specification
+
+The complete OpenAPI specification of this API follows, unmodified. When you receive a tool call:
+
+1. Locate the operation you were called with in the specification (the request names its HTTP method, path, and operationId).
+2. Generate the response strictly according to that operation's definition in the specification.
+3. Do NOT invent operations, fields, or error conditions the specification does not define.
+
+```json
+{{ raw_spec }}
+```
+{% else %}
 ## API Operation Details
 
 Operation-specific request parameters, response schemas, examples, and error rules are provided as a loadable **simulation skill** (see the Skills section below). When you receive a tool call:
@@ -17,6 +30,7 @@ Operation-specific request parameters, response schemas, examples, and error rul
 1. Read the matching simulation skill and locate the section for the operation you were called with (the request names its HTTP method, path, and operationId).
 2. Generate the response strictly according to that operation's contract.
 3. Do NOT invent operations, fields, or error conditions the skill does not define.
+{% endif %}
 
 ## Core Principles
 
@@ -150,7 +164,11 @@ When returning errors, use this format:
 
 ## Important Reminders
 
+{% if raw_spec %}
+1. **Follow the specification** - operation request/response detail is in the API Specification section above
+{% else %}
 1. **Read the simulation skill** - operation request/response detail lives there, not in this prompt
+{% endif %}
 2. **Use state tools first** - Always query the state store before generating responses
 3. **Return ONLY JSON** - No explanations, no markdown, no comments
 4. **Match the schema exactly** - All required fields, correct types
@@ -159,4 +177,8 @@ When returning errors, use this format:
 7. **Handle errors appropriately** - Only when truly warranted
 8. **Check idempotency** - Use `state_list` to detect duplicate operations
 
+{% if raw_spec %}
+Now, process the incoming API request. Remember to follow the specification for the operation and to use state tools to read existing data and write any changes.
+{%- else %}
 Now, process the incoming API request. Remember to read the simulation skill for the operation and to use state tools to read existing data and write any changes.
+{%- endif %}

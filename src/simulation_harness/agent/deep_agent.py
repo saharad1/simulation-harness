@@ -66,6 +66,7 @@ class DeepAgent:
         agent_recursion_limit: int = 50,
         request_timeout_seconds: float | None = None,
         max_retries: int | None = None,
+        skill_enabled: bool = True,
     ):
         """Initialize Deep Agent.
 
@@ -85,6 +86,9 @@ class DeepAgent:
             agent_recursion_limit: Maximum recursion depth for agent (default: 10)
             request_timeout_seconds: Per-request LLM timeout; None keeps the client default
             max_retries: LLM retries per call; None keeps the client default
+            skill_enabled: Load the compiled skill. False is the `no_skill` ablation: no
+                SkillsMiddleware and no skill files; the raw OpenAPI spec is put in the system
+                prompt instead. The state store and its tools are unaffected.
         """
         self.spec = spec
         self.operations = operations
@@ -92,6 +96,7 @@ class DeepAgent:
         self.skill_dir = skill_dir
         self.skill_name = skill_name
         self.agent_recursion_limit = agent_recursion_limit
+        self.skill_enabled = skill_enabled
 
         # Per-simulation staging dir for the skills backend, created lazily in
         # _create_agent and removed in shutdown().
@@ -120,7 +125,13 @@ class DeepAgent:
         self.llm = ChatOpenAI(**llm_kwargs)
 
         # Render system prompt
-        self.system_prompt = render_system_prompt(spec)
+        # `no_skill`: the spec itself, unmodified, is the only description of the API.
+        if skill_enabled:
+            self.system_prompt = render_system_prompt(spec)
+        else:
+            self.system_prompt = render_system_prompt(
+                spec, raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False)
+            )
 
         logger.debug(
             f"Rendered system prompt: length={len(self.system_prompt)}, "
@@ -172,6 +183,22 @@ class DeepAgent:
         the per-API skill dynamically (progressive disclosure) and exposes the
         state tools. Without one, fall back to the legacy stateless agent.
         """
+        if self.store_registry and self.skill_dir and not self.skill_enabled:
+            # `no_skill`: state tools only. No SkillsMiddleware and no filesystem, so nothing of
+            # the compiled skill (SKILL.md, schema.json, ...) is reachable; the spec is in the
+            # system prompt. The store itself is the skill dir's, seeded as usual.
+            agent = create_agent(
+                self.llm,
+                system_prompt=self.system_prompt,
+                tools=create_state_tools(),
+                checkpointer=self.checkpointer,
+            )
+            logger.info(
+                f"Created no-skill agent: raw spec in prompt "
+                f"({len(self.system_prompt)} chars), no skill sources"
+            )
+            return agent
+
         if self.store_registry and self.skill_dir:
             tools = create_state_tools()
 
