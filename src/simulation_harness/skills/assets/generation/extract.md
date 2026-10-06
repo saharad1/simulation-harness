@@ -35,6 +35,37 @@ modeled above. Otherwise model the item shape, and name the collection in the
 plural the API itself uses for those things, not after the operation or the item
 schema's title.
 
+## Identity: read it off the requests, not the response
+
+A response shows what a thing looks like; only the requests show what
+**identifies** it. `How operations address these shapes` lists, per leftover,
+the request parameters made up only of that shape's own fields.
+
+- If the lookups and references that name **one** instance always pass the same
+  single field, that field is the `primary_key`.
+- If they always pass **two or more fields together** — and no single field
+  appears alone as a lookup — no one field identifies an instance, because each
+  value recurs across instances (a hotel room is booked by `hotel_id` *and*
+  `night`; the same hotel has many nights, the same night many hotels). Then
+  identity is the combination. Set `key_fields` to those field names, in the
+  order the API passes them most often, and add a string field named
+  `<entity>_key` as the `primary_key`. Its value is the `key_fields` values
+  joined with `|`, in `key_fields` order (`<first>|<second>`). Keep every
+  `key_fields` member as an ordinary field too.
+- A search's criteria (several filters, returning many) are not a lookup; do not
+  build a key from them.
+- Without such evidence, decide the key as you otherwise would.
+
+## A constant in a listing may be the operation's filter
+
+A `const` or single-value `enum` on a listing's item can record what the
+**operation** selects rather than every value the stored field holds (a search
+for open tickets returns only `open` ones). Relax it only on evidence: when
+another operation in the spec reports the same field with other values or as
+free text — for instance a lookup under `How operations address these shapes`
+whose `returns` is that one field as an unconstrained string — model the field
+as that wider type. Otherwise keep the constraint as declared.
+
 ## Output
 
 Produce ONLY a JSON object:
@@ -44,7 +75,8 @@ Produce ONLY a JSON object:
   `collection` (plural snake_case store key), `primary_key`, `fields` (each
   `name`, `type`, `required`, optional `enum`, `format`, `description`), optional
   `relationships` (`field`/`target_entity`/`target_field`),
-  `fingerprint_fields`, `temporal_fields`. Often this is an empty array.
+  `fingerprint_fields`, `temporal_fields`, and `key_fields` (only for a composed
+  key, see above; omit otherwise). Often this is an empty array.
 - `declined`: the names of the leftover schemas you judged not to be persisted
   entities. Every leftover must appear in exactly one of `entities` or
   `declined`.

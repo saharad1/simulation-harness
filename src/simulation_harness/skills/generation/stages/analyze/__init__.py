@@ -30,6 +30,7 @@ from simulation_harness.skills.generation.stages.analyze.merge import (
     validate_coverage,
 )
 from simulation_harness.skills.generation.stages.analyze.sources import (
+    addressing_evidence,
     collect_sources,
     inline_schema_evidence,
 )
@@ -193,6 +194,7 @@ async def analyze(
                 retries=retries,
                 derived=identity if identity.entities else None,
                 array_shaped=sources.deferred,
+                addressing=addressing_evidence(spec, leftovers),
             ),
             stage="analyze:extract",
             timeout=timeout,

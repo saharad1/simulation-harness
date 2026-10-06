@@ -143,6 +143,113 @@ def _identity_responses(spec: OpenAPISpec) -> tuple[dict[str, dict], frozenset[s
     return out, frozenset(deferred)
 
 
+def _request_signatures(schema: object, path: str = "") -> list[tuple[str, frozenset]]:
+    """``(path, scalar property names)`` for every object level of a request body.
+
+    Descends into object-valued properties, array items and union variants, so a
+    nested ``items: [{a, b}]`` yields its own signature under ``items[]`` — which
+    is how an API usually *names* a referenced instance.
+    """
+    if not isinstance(schema, dict):
+        return []
+    if schema.get("type") == "array" or "items" in schema:
+        return _request_signatures(schema.get("items"), f"{path}[]")
+    variants = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(variants, list) and "properties" not in schema:
+        return [s for v in variants for s in _request_signatures(v, path)]
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return []
+    out: list[tuple[str, frozenset]] = []
+    scalars = set()
+    for name in sorted(props):
+        prop = props[name]
+        if not isinstance(prop, dict):
+            continue
+        nested = _request_signatures(prop, f"{path}.{name}" if path else name)
+        if nested or prop.get("type") in ("object", "array") or "properties" in prop:
+            out.extend(nested)
+        else:
+            scalars.add(name)
+    if scalars:
+        out.insert(0, (path, frozenset(scalars)))
+    return out
+
+
+def _returns_summary(op) -> str | None:
+    """One line on what an operation returns: type plus description, or field names.
+
+    A lookup returning a single field of an entity is evidence about that field
+    which the entity's listing schema cannot give (a free-text value there means a
+    listing's const on the same field is the listing's filter).
+    """
+    resp = op.get_success_response_schema()
+    if not isinstance(resp, dict):
+        return None
+    resp = _unwrap_returns(resp)
+    inner = resp.get("items") if resp.get("type") == "array" else resp
+    props = inner.get("properties") if isinstance(inner, dict) else None
+    if isinstance(props, dict) and props:
+        shape = "{" + ", ".join(sorted(props)) + "}"
+        return f"array of {shape}" if inner is not resp else f"object {shape}"
+    kind = resp.get("type") or ("enum" if "enum" in resp else "value")
+    desc = resp.get("description")
+    return f"{kind}: {desc}" if desc else str(kind)
+
+
+def addressing_evidence(
+    spec: OpenAPISpec, leftovers: dict[str, dict]
+) -> dict[str, list[dict]]:
+    """How the API's operations name instances of each leftover shape.
+
+    For every leftover, the request signatures (see :func:`_request_signatures`)
+    made up **only** of that shape's own fields. A response schema says what a
+    thing looks like; only the requests say what identifies it. Without this the
+    fallback judged identity from responses alone (on tau2-airline it keyed
+    ``flights`` by ``flight_number``, though every request naming one flight also
+    passes ``date``).
+
+    Evidence, not a decision: a search's criteria also qualify (they are fields
+    of the item too), and telling a lookup from a search is left to the
+    fallback, which sees each operation's summary and what it returns.
+    """
+    out: dict[str, list[dict]] = {}
+    for name in sorted(leftovers):
+        schema = leftovers[name]
+        item = (
+            schema.get("items")
+            if isinstance(schema, dict) and schema.get("type") == "array"
+            else schema
+        )
+        props = item.get("properties") if isinstance(item, dict) else None
+        if not isinstance(props, dict) or not props:
+            continue
+        fields = set(props)
+        seen: set[tuple[str, str, tuple]] = set()
+        rows: list[dict] = []
+        for op in spec.operations:
+            for where, sig in _request_signatures(op.get_request_schema()):
+                if not sig <= fields:
+                    continue
+                key = (op.operation_id, where, tuple(sorted(sig)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                row = {
+                    "operation": op.operation_id,
+                    "summary": op.summary,
+                    "parameter": where or "(request body)",
+                    "fields": sorted(sig),
+                }
+                returns = _returns_summary(op)
+                if returns:
+                    row["returns"] = returns
+                rows.append(row)
+        if rows:
+            out[name] = rows
+    return out
+
+
 def collect_sources(spec: OpenAPISpec, spec_dict: dict) -> SchemaSources:
     components = spec_dict.get("components", {}).get("schemas", {}) or {}
     if components:

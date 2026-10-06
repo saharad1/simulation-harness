@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover
     from importlib_resources import files  # type: ignore[import-not-found]
 
 from simulation_harness.skills.generation.ir import (
+    KEY_SEPARATOR,
     ElementField,
     ElementShape,
     Entity,
@@ -258,6 +259,8 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
       stage is free to populate an array in a shape no other stage agreed to.
       Stamping it makes ``validate_schema_and_db`` reject the mismatch and feed
       it back as repair feedback, with no seed-prompt change at all.
+    - Per entity with a composed key: ``x-key-fields`` and ``x-key-separator``,
+      the recipe for its ``x-primary-key`` value.
     """
     if isinstance(schema, dict):
         schema["required"] = list(ir.store_metadata.collections)
@@ -274,6 +277,12 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
         entity = entities.get(collection)
         if entity is not None:
             _stamp_element_shapes(entity_def, entity)
+            if entity.key_fields:
+                # The recipe for the composed key travels with the key, so anything
+                # that seeds or reads this store builds the same value without
+                # reverse-engineering it from SKILL.md prose.
+                entity_def["x-key-fields"] = list(entity.key_fields)
+                entity_def["x-key-separator"] = KEY_SEPARATOR
     return schema
 
 

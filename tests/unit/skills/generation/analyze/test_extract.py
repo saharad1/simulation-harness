@@ -592,3 +592,76 @@ async def test_accepting_first_time_costs_one_call() -> None:
             array_shaped=frozenset({"search_direct_flight"}),
         )
     assert call.await_count == 1
+
+
+def _room(**over) -> Entity:
+    base = dict(
+        name="Room",
+        collection="rooms",
+        primary_key="room_key",
+        key_fields=["hotel_id", "night"],
+        fields=[
+            Field(name="room_key", type="string", required=True),
+            Field(name="hotel_id", type="string", required=True),
+            Field(name="night", type="string", required=True),
+        ],
+    )
+    base.update(over)
+    return Entity(**base)
+
+
+def _dm(entity: Entity) -> E.DataModel:
+    return E.DataModel(
+        api_name="Hotels",
+        entities=[entity],
+        store_metadata=StoreMetadata(
+            collections=[entity.collection],
+            pk_map={entity.collection: entity.primary_key},
+        ),
+    )
+
+
+def test_composed_key_validates_clean() -> None:
+    assert E.validate_data_model(_dm(_room())) == []
+
+
+def test_composed_key_needs_two_real_parts() -> None:
+    assert any(
+        "two or more" in e
+        for e in E.validate_data_model(_dm(_room(key_fields=["night"])))
+    )
+    errors = E.validate_data_model(_dm(_room(key_fields=["hotel_id", "day"])))
+    assert any("['day'] are not fields" in e for e in errors)
+
+
+def test_composed_key_must_be_its_own_string_field() -> None:
+    # The key is the join, so it cannot also be one of its parts...
+    errors = E.validate_data_model(_dm(_room(primary_key="night")))
+    assert any("must be the composed key field" in e for e in errors)
+    # ...and it holds a joined string.
+    room = _room()
+    room.fields[0] = Field(name="room_key", type="integer", required=True)
+    assert any("must be type 'string'" in e for e in E.validate_data_model(_dm(room)))
+
+
+async def test_addressing_evidence_reaches_the_prompt() -> None:
+    addressing = {
+        "search_rooms": [
+            {"operation": "get_room_status", "fields": ["hotel_id", "night"]}
+        ]
+    }
+    mock = AsyncMock(return_value=VALID)
+    with patch.object(E, "call_json", mock):
+        await E.extract_data_model(
+            {}, slug="hotels", llm=object(), retries=0, addressing=addressing
+        )
+    user = mock.call_args.args[2]
+    assert "# How operations address these shapes" in user
+    assert "get_room_status" in user
+
+
+async def test_no_addressing_evidence_leaves_the_prompt_unchanged() -> None:
+    mock = AsyncMock(return_value=VALID)
+    with patch.object(E, "call_json", mock):
+        await E.extract_data_model({}, slug="aha", llm=object(), retries=0)
+    assert "How operations address" not in mock.call_args.args[2]

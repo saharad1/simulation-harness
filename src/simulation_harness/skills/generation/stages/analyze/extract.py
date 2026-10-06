@@ -11,7 +11,7 @@ try:
 except ImportError:  # pragma: no cover
     from importlib_resources import files  # type: ignore[import-not-found]
 
-from simulation_harness.skills.generation.ir import Entity, StoreMetadata
+from simulation_harness.skills.generation.ir import KEY_SEPARATOR, Entity, StoreMetadata
 from simulation_harness.skills.generation.llm import call_json
 from simulation_harness.skills.generation.repair import (
     GenerationStageError,
@@ -49,6 +49,38 @@ class _Invalid:
         self.errors = errors
 
 
+def _key_fields_errors(e: Entity) -> list[str]:
+    """Shape errors in a composed key — the parts must be real fields, and the key
+    itself a separate string field, or the joined value has nothing to be built
+    from and nowhere to live."""
+    if not e.key_fields:
+        return []
+    errors: list[str] = []
+    names = {f.name: f for f in e.fields}
+    if len(e.key_fields) < 2 or len(set(e.key_fields)) != len(e.key_fields):
+        errors.append(
+            f"entity '{e.name}' key_fields must name two or more distinct fields "
+            f"(got {e.key_fields}); a single identifying field is the primary_key itself"
+        )
+    missing = [k for k in e.key_fields if k not in names]
+    if missing:
+        errors.append(
+            f"entity '{e.name}' key_fields {missing} are not fields of the entity"
+        )
+    if e.primary_key in e.key_fields:
+        errors.append(
+            f"entity '{e.name}' primary_key '{e.primary_key}' must be the composed key "
+            f"field, not one of its key_fields"
+        )
+    pk = names.get(e.primary_key)
+    if pk is not None and pk.type != "string":
+        errors.append(
+            f"entity '{e.name}' composed primary_key '{e.primary_key}' must be type "
+            f"'string' (it holds the key_fields values joined by '{KEY_SEPARATOR}')"
+        )
+    return errors
+
+
 def validate_data_model(
     dm: DataModel, derived: IdentityModel | None = None
 ) -> list[str]:
@@ -71,6 +103,7 @@ def validate_data_model(
                 f"entity '{e.name}' fields must include its primary key "
                 f"'{e.primary_key}'"
             )
+        errors.extend(_key_fields_errors(e))
     # The same duplicate check ``validate_enrichment`` makes (enrich.py), for
     # both collection and name. Without it, a fallback payload with two
     # entities on one collection (or sharing a name) validates clean, reaches
@@ -136,6 +169,20 @@ def _derived_context(derived: IdentityModel | None) -> str:
     return (
         "# Already-modeled entities (read-only — do not restate or collide "
         f"with these)\n```json\n{json.dumps(summary, indent=2)}\n```\n\n"
+    )
+
+
+def _addressing_context(addressing: dict[str, list[dict]] | None) -> str:
+    """Render how operations name each leftover's instances (see
+    ``sources.addressing_evidence``) — the only identity evidence a response
+    schema cannot carry."""
+    if not addressing:
+        return ""
+    return (
+        "# How operations address these shapes\n"
+        "For each leftover: request parameters made up only of its own fields — "
+        "lookups and references name one instance, searches filter many.\n"
+        f"```json\n{json.dumps(addressing, indent=2)}\n```\n\n"
     )
 
 
@@ -218,17 +265,19 @@ async def extract_data_model(
     retries: int,
     derived: IdentityModel | None = None,
     array_shaped: frozenset[str] = frozenset(),
+    addressing: dict[str, list[dict]] | None = None,
 ) -> DataModel:
     """Ask the LLM about schemas the deterministic rule could not decide.
 
     Scoped fallback: ``components`` here is the *undecidable* subset, not the
-    whole spec. ``derived`` is read-only context. The LLM may decline every
-    schema — that is frequently the right answer.
+    whole spec. ``derived`` and ``addressing`` are read-only context. The LLM may
+    decline every schema — that is frequently the right answer.
     """
     prompt = _load_prompt()
     base_user = (
         _derived_context(derived)
         + _array_shaped_context(array_shaped, components)
+        + _addressing_context(addressing)
         + f"# Leftover schemas\n```json\n{json.dumps(components, indent=2)}\n```\n"
     )
 
