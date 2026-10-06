@@ -696,3 +696,27 @@ async def test_start_simulation_missing_artifacts_raises(
 
 
 # Made with Bob
+
+
+def test_default_factory_refuses_unimplemented_state_ablation(tmp_path) -> None:
+    """state=False has no implementation: the factory must refuse, not serve the full method
+    while the status endpoint reports state=false."""
+    from unittest.mock import MagicMock, patch
+
+    from simulation_harness.core import simulation_host
+
+    cfg = MagicMock()
+    cfg.ablation.state = False
+    cfg.ablation.skill = True
+    with (
+        patch.object(simulation_host, "get_config", return_value=cfg),
+        patch.object(simulation_host, "get_secrets", return_value=MagicMock()),
+    ):
+        try:
+            simulation_host._default_instance_factory(
+                simulation_name="x", openapi_spec={}, skill_dir=tmp_path, mcp_port=None
+            )
+        except ValueError as e:
+            assert "HARNESS_ABLATION_STATE" in str(e)
+        else:
+            raise AssertionError("state=False must be refused")

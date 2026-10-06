@@ -37,6 +37,14 @@ def _default_instance_factory(
 
     config = get_config()
     secrets = get_secrets()
+    # `state=False` (no store, no seed) has no implementation on this branch. Refuse rather than
+    # serve the full method under a label that says otherwise: a mislabeled condition corrupts
+    # every comparison built on it, and the status endpoint reports these toggles verbatim.
+    if not config.ablation.state:
+        raise ValueError(
+            "HARNESS_ABLATION_STATE=false is not implemented on this branch; refusing to start "
+            "a simulation that would report state=false while running with a store"
+        )
     spec = SimulationSpec(name=simulation_name, openapi_spec=openapi_spec)
     return SimulationInstance(
         spec=spec,
@@ -50,6 +58,7 @@ def _default_instance_factory(
         base_url=secrets.llm_api_base,
         skill_dir=skill_dir,
         agent_recursion_limit=config.sessions.agent_recursion_limit,
+        skill_enabled=config.ablation.skill,
         mcp_port=mcp_port,
     )
 

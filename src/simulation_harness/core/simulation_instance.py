@@ -41,6 +41,7 @@ class SimulationInstance:
         base_url: str | None = None,
         skill_dir: Path | None = None,
         agent_recursion_limit: int = 50,
+        skill_enabled: bool = True,
         mcp_port: int | None = None,
     ) -> None:
         """Initialize simulation instance.
@@ -57,6 +58,8 @@ class SimulationInstance:
             base_url: Optional custom LLM API base URL (e.g. for LLM_API_BASE)
             skill_dir: Optional path to skill directory for state store
             agent_recursion_limit: Maximum recursion depth for agent
+            skill_enabled: Load the compiled skill (the method). False is the `no_skill`
+                ablation: the raw OpenAPI spec goes into the system prompt instead.
             mcp_port: Optional port for a sidecar MCP server on a separate port.
         """
         self.spec = spec
@@ -94,6 +97,7 @@ class SimulationInstance:
             # Agent Skills name, and would make the skill's identity move on every regeneration).
             skill_name=spec.name,
             agent_recursion_limit=agent_recursion_limit,
+            skill_enabled=skill_enabled,
         )
 
         logger.info(
