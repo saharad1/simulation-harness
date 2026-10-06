@@ -126,7 +126,10 @@ async def analyze(
     # vary between two generations of the same spec.
     cb("deriving_identity")
     identity = derive_identity(
-        sources.identity, synthetic=sources.synthetic, deferred=sources.deferred
+        sources.identity,
+        synthetic=sources.synthetic,
+        deferred=sources.deferred,
+        operation_ids=[op.operation_id for op in spec.operations],
     )
 
     # Stage 1a-2 — enrich the derived entities with field detail. Degrades to

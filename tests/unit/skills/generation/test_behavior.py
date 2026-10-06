@@ -186,3 +186,51 @@ async def test_guard_is_wired_into_generation() -> None:
         with pytest.raises(GenerationStageError) as excinfo:
             await B.generate_behavior(_ir(), llm=object(), retries=0)
     assert "cannot observe" in str(excinfo.value)
+
+
+def _rules(*bullets: str, on_demand: str = "- none") -> str:
+    return (
+        "### Numeric Ranges and Ordering\n- price 10-100\n\n"
+        "### Derivation Rules\n" + "\n".join(f"- {b}" for b in bullets) + "\n\n"
+        "### On-Demand Generation Rules\n" + on_demand + "\n"
+    )
+
+
+def test_generator_formula_for_a_stored_field_is_rejected() -> None:
+    section = _rules("`Feature.price` = 10 + (hash of `Feature.id` mod 90).")
+    violations = B.stored_field_derivation_violations(section, _ir())
+    assert len(violations) == 1
+    assert "store already holds" in violations[0]
+
+
+@pytest.mark.parametrize(
+    "bullet",
+    [
+        # relating real values, no generator arithmetic
+        "The order total = sum of `Feature.price` over its features.",
+        # explicitly limited to values the store does not hold
+        "For any unseeded `Feature.price`, use 10 + (`Feature.id` digits mod 90).",
+        # generator arithmetic, but on nothing the store holds
+        "A confirmation code = 6 digits derived from the request time mod 10^6.",
+    ],
+)
+def test_legitimate_derivation_rules_are_untouched(bullet: str) -> None:
+    assert B.stored_field_derivation_violations(_rules(bullet), _ir()) == []
+
+
+def test_generation_rules_belong_in_on_demand_and_are_not_checked_there() -> None:
+    section = _rules(
+        "total = sum of prices",
+        on_demand="- `Feature.price` = 10 + (hash of `Feature.id` mod 90).",
+    )
+    assert B.stored_field_derivation_violations(section, _ir()) == []
+
+
+async def test_generate_behavior_repairs_a_stored_field_formula() -> None:
+    bad = _rules("`Feature.price` = 10 + (hash of `Feature.id` mod 90).")
+    calls = AsyncMock(side_effect=[bad, WELL_FORMED])
+    with patch.object(B, "call_text", calls):
+        out = await B.generate_behavior(_ir(), llm=object(), retries=1)
+    assert out == WELL_FORMED
+    feedback = calls.call_args_list[1].args[2]
+    assert "store already holds" in feedback

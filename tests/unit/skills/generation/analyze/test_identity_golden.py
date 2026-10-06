@@ -27,9 +27,14 @@ EXAMPLES = Path(__file__).resolve().parents[5] / "utils" / "test-client" / "exam
 
 def _derive(filename: str) -> tuple[list[str], dict[str, str], list[str]]:
     spec_dict = json.loads((EXAMPLES / filename).read_text())
-    sources = collect_sources(OpenAPISpec(spec_dict), spec_dict)
+    spec = OpenAPISpec(spec_dict)
+    sources = collect_sources(spec, spec_dict)
+    # Operation ids as analyze() passes them, so this locks the production contract.
     model = derive_identity(
-        sources.identity, synthetic=sources.synthetic, deferred=sources.deferred
+        sources.identity,
+        synthetic=sources.synthetic,
+        deferred=sources.deferred,
+        operation_ids=[op.operation_id for op in spec.operations],
     )
     return model.collections, model.pk_map, list(model.undecidable)
 
@@ -68,15 +73,21 @@ def test_tau2_retail_contract() -> None:
 
 # Airline gains `payment_methods` (pk `id`) for the same reason as retail: its
 # `User.payment_methods` is the same credit_card/gift_card instrument map behind
-# an anyOf, now derived directly instead of being left undecidable. `payments`,
-# `reservations` and `users` (and their primary keys) are untouched — that is the
-# regression guard for this change. See
+# an anyOf, now derived directly instead of being left undecidable. `reservations`
+# and `users` (and their primary keys) are untouched by it. See
 # docs/superpowers/specs/2026-09-08-payment-methods-identity-design.md.
+#
+# `payments` is gone, deliberately: it was rule 4 adopting `payment_history[].payment_id`
+# as the entries' own id on the name stem alone. No airline operation is about a
+# payment, and the spec describes `payment_id` as "the payment id stored in user
+# profile" — a reference to the instrument. As a collection it held one row per
+# instrument with a single amount the API never defines, and generated skills
+# validated bookings against it, so every booking was refused. `payment_history`
+# is now an embedded element of `reservations`.
 def test_tau2_airline_contract() -> None:
     collections, pk_map, undecidable = _derive("tau2_airline_openapi.json")
-    assert collections == ["payments", "payment_methods", "reservations", "users"]
+    assert collections == ["payment_methods", "reservations", "users"]
     assert pk_map == {
-        "payments": "payment_id",
         "payment_methods": "id",
         "reservations": "reservation_id",
         "users": "user_id",

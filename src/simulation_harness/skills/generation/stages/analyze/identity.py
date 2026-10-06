@@ -11,7 +11,7 @@ and not a prompt.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
 from simulation_harness.skills.generation.ir import ElementField, ElementShape
@@ -137,8 +137,32 @@ def _noun_is_stem(noun: str, holder: str) -> bool:
     return bool(want) and have[: len(want)] == want
 
 
+def operations_name(noun: str, operation_ids: Iterable[str]) -> bool:
+    """Whether some operation id refers to ``noun`` (``get_payment``, ``list_payments``).
+
+    Segment-wise and singularized, so ``payment`` matches ``refund_payment`` and
+    ``list_payments``. Deliberately permissive (``update_payment_method`` also
+    counts): this only ever *keeps* a collection rule 4 would have coined anyway.
+    """
+    want = [_singular_segment(s) for s in noun.split("_") if s]
+    if not want:
+        return False
+    for op_id in operation_ids:
+        have = [_singular_segment(s) for s in snake(op_id).split("_") if s]
+        if any(
+            have[i : i + len(want)] == want for i in range(len(have) - len(want) + 1)
+        ):
+            return True
+    return False
+
+
 def identity_key(
-    name: str, schema: dict, *, synthetic: bool, nested: bool = False
+    name: str,
+    schema: dict,
+    *,
+    synthetic: bool,
+    nested: bool = False,
+    addressed: Callable[[str], bool] | None = None,
 ) -> str | None:
     """The property that identifies instances of ``schema``, or ``None``.
 
@@ -191,7 +215,15 @@ def identity_key(
     if "id" in props and _scalar_candidate(props["id"]):
         return "id"
     if synthetic and len(candidates) == 1:
-        if not nested or _noun_is_stem(candidates[0][:-3], name):
+        noun = candidates[0][:-3]
+        if not nested:
+            return candidates[0]
+        # At element level the name stem alone cannot tell an own id from a
+        # reference (`payment_history` items carrying `payment_id` may be payments,
+        # or pointers to the payment method used). When the caller supplies the
+        # operation ids, also require the API to have an operation about the noun:
+        # a collection nothing operates on is a value embedded in its parent.
+        if _noun_is_stem(noun, name) and (addressed is None or addressed(noun)):
             return candidates[0]
     return None
 
@@ -544,6 +576,7 @@ def _element_shape(
     element_schema: dict,
     *,
     synthetic: bool,
+    addressed: Callable[[str], bool] | None = None,
 ) -> ElementShape | None:
     """Decide how one container property's elements are stored, or ``None``.
 
@@ -578,7 +611,9 @@ def _element_shape(
 
     fields = _element_fields(element)
     embedded = ElementShape(kind="embedded", container=container, fields=fields)
-    nested = identity_key(prop_name, element, synthetic=synthetic, nested=True)
+    nested = identity_key(
+        prop_name, element, synthetic=synthetic, nested=True, addressed=addressed
+    )
     if nested is None or nested == parent.primary_key:
         fk = _foreign_key(element, clusters, parent=parent)
         if fk is None:
@@ -642,7 +677,10 @@ def _element_shape(
 
 
 def _derive_element_shapes(
-    clusters: dict[str, _Cluster], *, synthetic: bool
+    clusters: dict[str, _Cluster],
+    *,
+    synthetic: bool,
+    addressed: Callable[[str], bool] | None = None,
 ) -> dict[str, dict[str, ElementShape]]:
     """Element shapes per cluster noun, decided once clustering is complete."""
     out: dict[str, dict[str, ElementShape]] = {}
@@ -658,6 +696,7 @@ def _derive_element_shapes(
                 container,
                 element_schema,
                 synthetic=synthetic,
+                addressed=addressed,
             )
             if shape is not None:
                 shapes[prop_name] = shape
@@ -703,6 +742,7 @@ def derive_identity(
     *,
     synthetic: bool,
     deferred: frozenset[str] = frozenset(),
+    operation_ids: Iterable[str] | None = None,
 ) -> IdentityModel:
     """Cluster ``schemas`` into entities by identity key.
 
@@ -728,6 +768,10 @@ def derive_identity(
         GenerationStageError: stage ``"identity"``, when two nouns pluralize onto
             the same collection name. See :func:`_reject_colliding_collections`.
     """
+    # `operation_ids` opts into the element-level operation check in identity_key;
+    # omitted, the rule behaves exactly as before.
+    ops = frozenset(operation_ids) if operation_ids is not None else None
+    addressed = (lambda noun: operations_name(noun, ops)) if ops is not None else None
     clusters: dict[str, _Cluster] = {}
     undecidable: list[str] = []
     for name in sorted(schemas):
@@ -765,7 +809,11 @@ def derive_identity(
                 # the name in hand is a property name, which is a real noun,
                 # not the enclosing operation id.
                 nested = identity_key(
-                    prop_name, target, synthetic=synthetic, nested=True
+                    prop_name,
+                    target,
+                    synthetic=synthetic,
+                    nested=True,
+                    addressed=addressed,
                 )
                 if nested is None or nested == key:
                     continue
@@ -777,7 +825,9 @@ def derive_identity(
                     f"{name}.{prop_name}",
                 )
     _reject_colliding_collections(clusters)
-    element_shapes = _derive_element_shapes(clusters, synthetic=synthetic)
+    element_shapes = _derive_element_shapes(
+        clusters, synthetic=synthetic, addressed=addressed
+    )
     entities = tuple(
         DerivedEntity(
             name=camel(noun),
