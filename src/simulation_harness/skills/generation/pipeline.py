@@ -27,7 +27,12 @@ from simulation_harness.skills.generation.stages.operations import (
     generate_section,
     plan_chunks,
 )
-from simulation_harness.skills.generation.stages.schema import generate_schema
+from simulation_harness.skills.generation.stages.schema import (
+    generate_schema,
+    open_value_fields,
+    relax_open_fields_ir,
+    relax_open_fields_schema,
+)
 from simulation_harness.skills.generation.stages.scenarios import generate_scenarios
 from simulation_harness.skills.generation.stages.seed import generate_seed
 from simulation_harness.utils.logging import get_logger
@@ -87,6 +92,11 @@ async def run_pipeline(
     )
 
     spec = OpenAPISpec(spec_dict)
+    # Fields a lookup reports as free text must not stay pinned to a listing's
+    # single value — applied to the IR here, before every later stage reads it,
+    # and to the schema after it is generated (see relax_open_fields_schema).
+    open_fields = open_value_fields(spec, ir)
+    ir = relax_open_fields_ir(ir, open_fields)
     chunks = plan_chunks(ir, threshold=gen_config.chunk_threshold)
     total = len(chunks)
     sem = asyncio.Semaphore(gen_config.concurrency)
@@ -181,6 +191,7 @@ async def run_pipeline(
         behavior_task(),
         *[one_section(c) for c in chunks],
     )
+    schema = relax_open_fields_schema(schema, ir, open_fields)
 
     # Stage: seed (depends on schema + scenarios)
     scenario_dicts = [s.model_dump() for s in scenarios]

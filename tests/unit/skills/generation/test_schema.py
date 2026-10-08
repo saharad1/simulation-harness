@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.skills.generation.ir import (
     Entity,
     Field,
@@ -309,3 +310,108 @@ def test_enforce_contract_stamps_the_composed_key_recipe() -> None:
 def test_enforce_contract_adds_no_key_recipe_for_a_plain_key() -> None:
     order = S.enforce_contract(_order_schema(), _shop_ir())["$defs"]["Order"]
     assert "x-key-fields" not in order
+
+
+def _status_spec(returns: dict) -> OpenAPISpec:
+    s = {"type": "string"}
+    return OpenAPISpec(
+        {
+            "openapi": "3.0.0",
+            "info": {"title": "Hotels", "version": "1"},
+            "paths": {
+                "/get_room_status": {
+                    "post": {
+                        "operationId": "get_room_status",
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {"hotel_id": s, "night": s},
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "ok",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"properties": {"returns": returns}}
+                                    }
+                                },
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    )
+
+
+def _room_ir() -> SpecModel:
+    return SpecModel(
+        api_name="Hotels",
+        slug="hotels",
+        entities=[
+            Entity(
+                name="Room",
+                collection="rooms",
+                primary_key="room_key",
+                fields=[
+                    Field(name="room_key", type="string", required=True),
+                    Field(name="hotel_id", type="string"),
+                    Field(name="night", type="string"),
+                    Field(name="status", type="string", enum=["open"]),
+                ],
+            )
+        ],
+        operations=[],
+        store_metadata=StoreMetadata(
+            collections=["rooms"], pk_map={"rooms": "room_key"}
+        ),
+    )
+
+
+def _room_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {"rooms": {"type": "array", "items": {"$ref": "#/$defs/Room"}}},
+        "$defs": {
+            "Room": {
+                "type": "object",
+                "properties": {
+                    "room_key": {"type": "string"},
+                    "status": {"type": "string", "enum": ["open"]},
+                },
+            }
+        },
+    }
+
+
+def test_a_lookup_returning_free_text_opens_the_field() -> None:
+    spec = _status_spec({"type": "string", "description": "The status of the room."})
+    open_fields = S.open_value_fields(spec, _room_ir())
+    assert open_fields == {"Room": {"status"}}
+    ir = S.relax_open_fields_ir(_room_ir(), open_fields)
+    assert next(f for f in ir.entities[0].fields if f.name == "status").enum is None
+    schema = S.relax_open_fields_schema(_room_schema(), ir, open_fields)
+    assert "enum" not in schema["$defs"]["Room"]["properties"]["status"]
+
+
+@pytest.mark.parametrize(
+    "returns",
+    [
+        {
+            "type": "string",
+            "enum": ["open", "closed"],
+            "description": "The status of the room.",
+        },
+        {"type": "string", "description": "A confirmation message."},
+        {"type": "object", "properties": {"status": {"type": "string"}}},
+    ],
+)
+def test_constrained_or_unrelated_returns_open_nothing(returns: dict) -> None:
+    assert S.open_value_fields(_status_spec(returns), _room_ir()) == {}
+    schema = S.relax_open_fields_schema(_room_schema(), _room_ir(), {})
+    assert schema["$defs"]["Room"]["properties"]["status"]["enum"] == ["open"]

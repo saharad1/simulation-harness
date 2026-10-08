@@ -128,6 +128,87 @@ def unknown_store_references(section: str, collections: Iterable[str]) -> list[s
     ]
 
 
+def _schema_field_names(schema: Any, out: set[str]) -> set[str]:
+    """Every property name at any depth of a request schema: nested objects, array
+    items and union variants included."""
+    if isinstance(schema, dict):
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for name, sub in props.items():
+                out.add(name)
+                _schema_field_names(sub, out)
+        _schema_field_names(schema.get("items"), out)
+        for key in ("anyOf", "oneOf", "allOf"):
+            for variant in schema.get(key) or []:
+                _schema_field_names(variant, out)
+    return out
+
+
+def request_field_names(spec: OpenAPISpec, op: Operation) -> set[str]:
+    """The input names a caller can send to ``op``: body fields at any depth plus
+    path/query parameters."""
+    parsed = spec.get_operation_by_id(op.operation_id)
+    if parsed is None:
+        return set()
+    names = _schema_field_names(_resolve_refs(spec, parsed.get_request_schema()), set())
+    for param in parsed.parameters or []:
+        if isinstance(param, dict) and param.get("name"):
+            names.add(param["name"])
+    return names
+
+
+_ABSENT = re.compile(
+    r"(?i)\b(?:is |are )?(?:missing|omits?|lacks?|does not (?:include|contain|have)"
+    r"|do not (?:include|contain|have))\b"
+)
+_TICKED = re.compile(r"`([A-Za-z_][\w.\[\]]*)`")
+
+
+def _leaf(name: str) -> str:
+    return re.split(r"[.\[\]]+", name.strip("[]."))[-1] if name else name
+
+
+def undefined_input_requirements(
+    section: str, request_fields: dict[str, set[str]]
+) -> list[str]:
+    """Error rules that reject a request for lacking a field the request cannot carry.
+
+    ``request_fields`` maps each operation's section header to its request field
+    names. A rule of the form "when <request input> is missing `x`: return an
+    error" with ``x`` absent from the request schema rejects every valid call: the
+    caller has no way to send ``x``. Observed on tau2-airline, where a skill
+    demanded `origin`/`destination`/`price` on `update_reservation_flights` items
+    (the stored shape) though the request item is `{flight_number, date}`, and
+    refused all 12 such calls in a 26-task fidelity run.
+
+    Only rules whose subject — the text before "missing"/"omits"/… — names a
+    request field are checked, so a rule about stored state ("the stored
+    reservation is missing `flights`") is left alone.
+    """
+    headers = [h for h in request_fields if h in section]
+    starts = sorted((section.index(h), h) for h in headers)
+    out = []
+    for i, (pos, header) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(section)
+        allowed = request_fields[header]
+        for line in section[pos:end].splitlines():
+            match = _ABSENT.search(line)
+            if not match:
+                continue
+            subject, demanded = line[: match.start()], line[match.end() :]
+            if not any(_leaf(n) in allowed for n in _TICKED.findall(subject)):
+                continue
+            extra = sorted({_leaf(n) for n in _TICKED.findall(demanded)} - allowed)
+            if extra:
+                out.append(
+                    f"{header}: rule rejects a request for lacking {extra}, which the "
+                    f"request schema does not define, so every valid call would fail. "
+                    f"Require only fields the request carries; take the rest from the "
+                    f"store: {line.strip()[:160]!r}"
+                )
+    return out
+
+
 def _linked_entities(ir: SpecModel, entity: Entity | None) -> list[dict]:
     """The entities this operation's own entity points at through its arrays.
 
@@ -217,6 +298,7 @@ async def generate_section(
         f"# Operations to document\n```json\n{json.dumps(contexts, indent=2)}\n```\n"
     )
     required_headers = [section_header(op) for op in chunk]
+    request_fields = {section_header(op): request_field_names(spec, op) for op in chunk}
 
     async def produce(feedback):
         user = base_user + (
@@ -231,6 +313,7 @@ async def generate_section(
             if h not in section
         ]
         errors.extend(unknown_store_references(section, ir.store_metadata.collections))
+        errors.extend(undefined_input_requirements(section, request_fields))
         return errors
 
     return await with_repair(produce, validate, stage="operations", retries=retries)
