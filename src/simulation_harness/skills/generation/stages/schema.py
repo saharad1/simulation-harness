@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import jsonschema
 from jsonschema.validators import Draft202012Validator
@@ -19,8 +20,13 @@ from simulation_harness.skills.generation.ir import (
     Entity,
     SpecModel,
 )
+from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.skills.generation.llm import call_json
 from simulation_harness.skills.generation.repair import with_repair
+from simulation_harness.skills.generation.stages.analyze.sources import (
+    _request_signatures,
+    _unwrap_returns,
+)
 
 
 def _load_prompt() -> str:
@@ -30,6 +36,95 @@ def _load_prompt() -> str:
 
 def entity_summary(ir: SpecModel) -> str:
     return json.dumps([e.model_dump() for e in ir.entities], indent=2)
+
+
+def open_value_fields(spec: OpenAPISpec, ir: SpecModel) -> dict[str, set[str]]:
+    """Entity fields the API reports as free text, keyed by entity name.
+
+    A lookup — an operation whose top-level request fields are all fields of one
+    entity — that returns a plain string (no ``enum``/``const``) describing a field
+    of that entity by name is evidence the field holds more than one value. A
+    listing's single-value constraint on the same field then records the listing's
+    filter, not the field: tau2-airline's searches return only ``available``
+    flights, while ``get_flight_status(flight_number, date)`` returns "The status
+    of the flight." as an open string.
+    """
+    out: dict[str, set[str]] = {}
+    for op in spec.operations:
+        resp = op.get_success_response_schema()
+        if not isinstance(resp, dict):
+            continue
+        resp = _unwrap_returns(resp)
+        if resp.get("type") != "string" or "enum" in resp or "const" in resp:
+            continue
+        desc = (resp.get("description") or "").lower()
+        top = next(
+            (
+                sig
+                for path, sig in _request_signatures(op.get_request_schema())
+                if path == ""
+            ),
+            None,
+        )
+        if not desc or not top:
+            continue
+        for entity in ir.entities:
+            names = {f.name for f in entity.fields}
+            if not top <= names:
+                continue
+            for f in entity.fields:
+                if f.name not in top and re.search(
+                    rf"\b{re.escape(f.name.lower())}\b", desc
+                ):
+                    out.setdefault(entity.name, set()).add(f.name)
+    return out
+
+
+def _single_valued(node: dict) -> bool:
+    enum = node.get("enum")
+    return "const" in node or (isinstance(enum, list) and len(enum) == 1)
+
+
+def relax_open_fields_ir(ir: SpecModel, open_fields: dict[str, set[str]]) -> SpecModel:
+    """Drop a single-value ``enum`` on open fields before later stages read the IR."""
+    if not open_fields:
+        return ir
+    entities = []
+    for e in ir.entities:
+        wanted = open_fields.get(e.name, set())
+        fields = [
+            f.model_copy(update={"enum": None})
+            if f.name in wanted and f.enum is not None and len(f.enum) <= 1
+            else f
+            for f in e.fields
+        ]
+        entities.append(e.model_copy(update={"fields": fields}))
+    return ir.model_copy(update={"entities": entities})
+
+
+def relax_open_fields_schema(
+    schema: dict, ir: SpecModel, open_fields: dict[str, set[str]]
+) -> dict:
+    """Drop a single-value ``enum``/``const`` the schema LLM put on an open field.
+
+    Deterministic, after generation: a prompt rule asking for this was measured
+    unreliable (2 of 10 airline draws still pinned ``status`` to ``available``, so
+    the real world's landed and cancelled flights could not be seeded).
+    """
+    for e in ir.entities:
+        wanted = open_fields.get(e.name)
+        if not wanted:
+            continue
+        _, entity_def = _resolve_def(schema, e.collection)
+        props = (entity_def or {}).get("properties")
+        if not isinstance(props, dict):
+            continue
+        for name in wanted:
+            node = props.get(name)
+            if isinstance(node, dict) and _single_valued(node):
+                node.pop("enum", None)
+                node.pop("const", None)
+    return schema
 
 
 def _resolve_def(schema: dict, collection: str) -> tuple[str | None, dict | None]:

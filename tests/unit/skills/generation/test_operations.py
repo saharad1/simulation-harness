@@ -424,3 +424,89 @@ async def test_generate_section_repairs_an_invented_collection() -> None:
             OpenAPISpec(SPEC), ir, ir.operations, llm=object(), retries=1
         )
     assert "`features`" in section
+
+
+def _room_spec() -> OpenAPISpec:
+    s = {"type": "string"}
+    room = {
+        "anyOf": [
+            {"type": "object", "properties": {"hotel_id": s, "night": s}},
+            {"type": "object", "additionalProperties": True},
+        ]
+    }
+    body = {
+        "type": "object",
+        "properties": {"stay_id": s, "rooms": {"type": "array", "items": room}},
+    }
+    return OpenAPISpec(
+        {
+            "openapi": "3.0.0",
+            "info": {"title": "Hotels", "version": "1"},
+            "paths": {
+                "/change_rooms": {
+                    "post": {
+                        "operationId": "change_rooms",
+                        "requestBody": {
+                            "content": {"application/json": {"schema": body}}
+                        },
+                        "responses": {"200": {"description": "ok"}},
+                    }
+                }
+            },
+        }
+    )
+
+
+def _change_rooms() -> Operation:
+    return Operation(
+        operation_id="change_rooms",
+        method="POST",
+        path="/change_rooms",
+        kind=OperationKind.update,
+    )
+
+
+def test_request_field_names_cover_nested_union_items() -> None:
+    assert O.request_field_names(_room_spec(), _change_rooms()) == {
+        "stay_id",
+        "rooms",
+        "hotel_id",
+        "night",
+    }
+
+
+def _rules(*lines: str) -> str:
+    return "### /change_rooms POST\n" + "\n".join(lines) + "\n"
+
+
+def test_rule_demanding_a_field_the_request_cannot_carry_is_rejected() -> None:
+    fields = {
+        "### /change_rooms POST": O.request_field_names(_room_spec(), _change_rooms())
+    }
+    section = _rules(
+        "  - When any item in `rooms` is missing `rate` or `floor` needed to store the stay:",
+        "    - return an error for incomplete room item.",
+    )
+    (violation,) = O.undefined_input_requirements(section, fields)
+    assert "['floor', 'rate']" in violation
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # demands only fields the request carries
+        "  - When any item in `rooms` is missing `hotel_id` or `night`:",
+        # about stored state, not the request
+        "  - When the stored stay is missing `rate`:",
+        # no absence wording at all
+        "  - When `stay_id` does not exist in `stays`:",
+    ],
+)
+def test_legitimate_error_rules_are_untouched(line: str) -> None:
+    fields = {
+        "### /change_rooms POST": O.request_field_names(_room_spec(), _change_rooms())
+    }
+    assert (
+        O.undefined_input_requirements(_rules(line, "    - return an error."), fields)
+        == []
+    )
