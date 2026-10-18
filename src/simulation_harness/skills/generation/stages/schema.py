@@ -324,6 +324,12 @@ def _stamp_element_shapes(entity_def: dict, entity: Entity) -> None:
             }
             if element.local_key is not None:
                 ref["field"] = element.local_key
+            if element.target_key_fields:
+                # The element carries the target's composed key as separate
+                # fields; joined in this order with this separator they are the
+                # target's primary key value.
+                ref["key_fields"] = list(element.target_key_fields)
+                ref["separator"] = KEY_SEPARATOR
             prop["x-element-ref"] = ref
 
 

@@ -66,6 +66,13 @@ class ElementShape(BaseModel):
     of its own) but one of its fields is a foreign key. That is a reference
     *annotation*, not the ``reference`` kind.
 
+    ``target_key_fields`` is set when the target is identified by a composed key
+    (its ``Entity.key_fields``): the element carries those fields, and together,
+    in the target's ``key_fields`` order and joined by :data:`KEY_SEPARATOR`,
+    they form the target's ``target_key`` value. The element stays ``embedded``
+    because it may carry per-parent fields too. Added after compose by
+    ``link_composed_references``, since composed keys are only known then.
+
     ``container`` says where the elements live. An ``array`` reference stores a
     list of bare identifiers (or link objects). A ``map`` reference stores a dict
     of bare identifiers keyed by that same identifier, never a copy of the target
@@ -96,6 +103,9 @@ class ElementShape(BaseModel):
     # to assemble it. Recorded where the hop is detected so no consumer has to
     # re-derive it. See ``_resolves_one_hop_out``.
     hop_collections: tuple[str, ...] = ()
+    # The element fields that together form the target's composed key, in the
+    # target's ``key_fields`` order. Empty for a single-field link.
+    target_key_fields: tuple[str, ...] = ()
 
 
 class Field(BaseModel):

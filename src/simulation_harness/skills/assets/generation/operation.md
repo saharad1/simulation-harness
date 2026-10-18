@@ -116,6 +116,12 @@ for an array, an id-keyed map of ids for a map), never the records themselves. R
 from that collection to build the response, and write any change (a balance, a stock flag) to that
 collection's record. Never store a copy inside the parent.
 
+When a field's `element` names a `target_collection` and lists `target_key_fields` (in the
+schema, an `x-element-ref` with `key_fields`), a request item that carries those fields refers
+to the existing record in that collection whose key is those values joined by the separator
+(`|`), in that order; look it up there. Do not require the item to carry the stored record's
+other fields.
+
 Two failures to avoid:
 
 - **Do not fall back to an empty object or array** for a nested value the stores can populate.

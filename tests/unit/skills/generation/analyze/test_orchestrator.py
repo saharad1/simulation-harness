@@ -946,3 +946,75 @@ async def test_analyze_enrich_stage_error_still_degrades() -> None:
             concurrency=5,
         )
     assert ir.entities[0].fields == _STRUCTURAL_USER_FIELDS
+
+
+async def test_analyze_links_elements_to_a_fallback_composed_key() -> None:
+    """A composed key exists only after the fallback, so ``analyze`` must link
+    an element that carries one after compose, not in the identity pass."""
+    spec: dict[str, Any] = {
+        "openapi": "3.0.0",
+        "info": {"title": "Legs", "version": "1.0"},
+        "paths": {},
+        "components": {
+            "schemas": {
+                "Booking": {
+                    "properties": {
+                        "booking_id": {"type": "string"},
+                        "legs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "number": {"type": "string"},
+                                    "date": {"type": "string"},
+                                    "price": {"type": "number"},
+                                },
+                            },
+                        },
+                    }
+                },
+                "Error": {"properties": {"message": {"type": "string"}}},
+            }
+        },
+    }
+    leg = Entity(
+        name="Leg",
+        collection="legs",
+        primary_key="leg_key",
+        key_fields=["date", "number"],
+        fields=[
+            Field(name="leg_key", type="string", required=True),
+            Field(name="number", type="string"),
+            Field(name="date", type="string"),
+        ],
+    )
+
+    async def fake_extract(*_a: Any, **_k: Any) -> Any:
+        return DataModel(
+            api_name="Legs",
+            entities=[leg],
+            store_metadata=StoreMetadata(
+                collections=["legs"], pk_map={"legs": "leg_key"}
+            ),
+        )
+
+    with (
+        patch.object(A, "extract_data_model", AsyncMock(side_effect=fake_extract)),
+        patch.object(A, "classify_batch", AsyncMock(return_value=[])),
+    ):
+        ir = await A.analyze(
+            spec,
+            "legs",
+            extract_llm=object(),
+            classify_llm=object(),
+            retries=0,
+            batch_cap=40,
+            concurrency=1,
+        )
+    booking = next(e for e in ir.entities if e.name == "Booking")
+    shape = next(f for f in booking.fields if f.name == "legs").element
+    assert shape is not None
+    assert shape.kind == "embedded"
+    assert shape.target_collection == "legs"
+    assert shape.target_key_fields == ("date", "number")
+    assert ir.store_metadata.pk_map == {"bookings": "booking_id", "legs": "leg_key"}

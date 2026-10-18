@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Callable
 
 from simulation_harness.openapi.parser import OpenAPISpec
@@ -15,6 +16,9 @@ from simulation_harness.skills.generation.repair import (
 from simulation_harness.skills.generation.stages.analyze.classify import (
     classify_batch,
     plan_classify_batches,
+)
+from simulation_harness.skills.generation.stages.analyze.composite import (
+    link_composed_references,
 )
 from simulation_harness.skills.generation.stages.analyze.enrich import (
     enrich_entities,
@@ -205,6 +209,10 @@ async def analyze(
 
     api_name = spec_dict.get("info", {}).get("title") or slug
     dm, provenance = compose_data_model(api_name, identity, enriched, fallback)
+    # Composed keys are only final here, after the fallback has run, so the
+    # identity pass could not link elements that carry one. Annotation only:
+    # collections and primary keys are untouched, so store_metadata stands.
+    dm = dataclasses.replace(dm, entities=link_composed_references(dm.entities))
     if not dm.entities:
         raise GenerationStageError(
             "extract",
