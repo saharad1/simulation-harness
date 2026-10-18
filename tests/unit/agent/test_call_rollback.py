@@ -13,6 +13,7 @@ have made), the fake's side effect writes to the store itself to stand in for
 "the LLM called state_update".
 """
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -146,3 +147,118 @@ async def test_success_response_keeps_writes(
         "reservations", "reservation_seed_001"
     )
     assert reservation["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_error_does_not_erase_other_success(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    """Two concurrent calls on the SAME thread: one errors, one succeeds.
+
+    The simulation host runs several calls on one thread concurrently (thread "default" is
+    shared by every call unless a caller passes an explicit thread_id). Without a per-thread
+    lock, the erroring call's checkpoint -- taken before the succeeding call's write landed --
+    would restore over that write when it rolls back its own, erasing a committed success.
+    This pins the fix: a per-thread lock serializes the two calls, so the erroring call's
+    checkpoint/restore cycle completes (and undoes only ITS OWN write) before the succeeding
+    call's checkpoint is even taken.
+    """
+    agent = _make_agent(mock_spec, mock_operation)
+    thread_id = "default"
+
+    async def _error_ainvoke(_input: Any, config: Any) -> dict:
+        # Checkpoint for this call has already been taken by the time ainvoke runs. Yield here
+        # so the OTHER call's checkpoint/write can interleave if nothing is serializing them.
+        await asyncio.sleep(0)
+        store = agent.store_registry.for_thread(thread_id)
+        store.update("reservations", "reservation_seed_001", {"status": "cancelled"})
+        message = Mock()
+        message.content = '{"error": "insufficient balance"}'
+        return {"messages": [message]}
+
+    async def _success_ainvoke(_input: Any, config: Any) -> dict:
+        store = agent.store_registry.for_thread(thread_id)
+        store.update("reservations", "reservation_seed_002", {"status": "cancelled"})
+        message = Mock()
+        message.content = '{"status": "exchanged"}'
+        return {"messages": [message]}
+
+    calls = iter([_error_ainvoke, _success_ainvoke])
+
+    async def _dispatch(_input: Any, config: Any) -> dict:
+        return await next(calls)(_input, config)
+
+    agent.agent.ainvoke = AsyncMock(side_effect=_dispatch)
+
+    error_out, success_out = await asyncio.gather(
+        agent.generate_response(
+            tool_name="exchangeItems",
+            arguments={"id": "reservation_seed_001"},
+            thread_id=thread_id,
+        ),
+        agent.generate_response(
+            tool_name="exchangeItems",
+            arguments={"id": "reservation_seed_002"},
+            thread_id=thread_id,
+        ),
+    )
+
+    assert error_out["error"] == "insufficient balance"
+    assert success_out == {"status": "exchanged"}
+
+    reservation_2 = agent.store_registry.for_thread(thread_id).get(
+        "reservations", "reservation_seed_002"
+    )
+    assert reservation_2["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_different_threads_not_serialized(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    """Calls on DIFFERENT threads must still run concurrently, not be serialized by the lock."""
+    agent = _make_agent(mock_spec, mock_operation)
+
+    thread_a_entered = asyncio.Event()
+    thread_b_entered = asyncio.Event()
+
+    async def _ainvoke_a(_input: Any, config: Any) -> dict:
+        thread_a_entered.set()
+        # Wait for B to enter too, proving the lock on thread "a" did not block thread "b".
+        await asyncio.wait_for(thread_b_entered.wait(), timeout=5)
+        message = Mock()
+        message.content = '{"status": "ok-a"}'
+        return {"messages": [message]}
+
+    async def _ainvoke_b(_input: Any, config: Any) -> dict:
+        thread_b_entered.set()
+        await asyncio.wait_for(thread_a_entered.wait(), timeout=5)
+        message = Mock()
+        message.content = '{"status": "ok-b"}'
+        return {"messages": [message]}
+
+    calls = iter([_ainvoke_a, _ainvoke_b])
+
+    async def _dispatch(_input: Any, config: Any) -> dict:
+        return await next(calls)(_input, config)
+
+    agent.agent.ainvoke = AsyncMock(side_effect=_dispatch)
+
+    out_a, out_b = await asyncio.wait_for(
+        asyncio.gather(
+            agent.generate_response(
+                tool_name="exchangeItems",
+                arguments={"id": "reservation_seed_001"},
+                thread_id="thread-a",
+            ),
+            agent.generate_response(
+                tool_name="exchangeItems",
+                arguments={"id": "reservation_seed_002"},
+                thread_id="thread-b",
+            ),
+        ),
+        timeout=5,
+    )
+
+    assert out_a == {"status": "ok-a"}
+    assert out_b == {"status": "ok-b"}

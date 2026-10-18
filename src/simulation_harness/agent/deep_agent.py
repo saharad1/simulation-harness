@@ -4,6 +4,7 @@ This module provides the main agent that generates mock responses using
 LangChain and LangGraph directly (without the deepagents library).
 """
 
+import asyncio
 import json
 import shutil
 import time
@@ -149,6 +150,14 @@ class DeepAgent:
             self.store_registry = StoreRegistry(skill_dir)
             logger.info(f"State store registry initialized for skill: {skill_dir}")
 
+        # One lock per thread, created lazily: without it, several calls on the SAME thread
+        # (the simulation host runs up to `max_concurrent_queue_depth` concurrently, and they
+        # all share thread "default") could interleave their checkpoint/restore around each
+        # other's writes -- a later call's restore would wipe out an earlier call's already-
+        # committed write. Calls on DIFFERENT threads must stay concurrent, so the lock is keyed
+        # per thread rather than being one lock for the whole agent.
+        self._thread_locks: dict[str, asyncio.Lock] = {}
+
         # Initialize session cleanup manager
         self.session_manager = SessionManager(
             checkpointer=self.checkpointer,
@@ -277,6 +286,46 @@ class DeepAgent:
             f"arguments={arguments}"
         )
 
+        # Determine effective thread_id
+        effective_thread_id = thread_id or "default"
+
+        # Record session activity for cleanup tracking
+        self.session_manager.record_activity(effective_thread_id)
+
+        # Serialize calls on the SAME thread: the simulation host runs several calls on one
+        # thread concurrently (up to `max_concurrent_queue_depth`), and without this a later
+        # call's checkpoint/restore could interleave with an earlier call's write -- restoring
+        # to a checkpoint taken before that write would silently erase it. Keyed per thread so
+        # calls on DIFFERENT threads are untouched and keep running concurrently. No lock is
+        # needed when there is no store to corrupt.
+        lock = (
+            self._thread_locks.setdefault(effective_thread_id, asyncio.Lock())
+            if self.store_registry is not None
+            else None
+        )
+
+        if lock is not None:
+            async with lock:
+                return await self._generate_response_locked(
+                    tool_name, operation, arguments, effective_thread_id
+                )
+        return await self._generate_response_locked(
+            tool_name, operation, arguments, effective_thread_id
+        )
+
+    async def _generate_response_locked(
+        self,
+        tool_name: str,
+        operation: OpenAPIOperation,
+        arguments: dict[str, Any],
+        effective_thread_id: str,
+    ) -> Any:
+        """The body of `generate_response`, run while the thread's lock is held.
+
+        Checkpoints the thread's store before the call and restores it on every path that
+        returns an error body, so a failed call never leaves behind the writes it made along
+        the way -- see `generate_response` for why this must run under the per-thread lock.
+        """
         # Populated once the thread's store is resolved below; stays None (and the
         # outer except is then a no-op restore) if that resolution never happens.
         store = None
@@ -288,14 +337,8 @@ class DeepAgent:
 
             logger.debug(
                 f"Request prompt: tool={tool_name}, prompt={request_prompt}, "
-                f"thread_id={thread_id or 'default'}"
+                f"thread_id={effective_thread_id}"
             )
-
-            # Determine effective thread_id
-            effective_thread_id = thread_id or "default"
-
-            # Record session activity for cleanup tracking
-            self.session_manager.record_activity(effective_thread_id)
 
             # Build config with thread_id for session management
             config: RunnableConfig = {
