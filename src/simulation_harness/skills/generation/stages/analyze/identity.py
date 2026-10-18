@@ -568,6 +568,38 @@ def _resolves_one_hop_out(
     return None
 
 
+def _map_value_copies_target(
+    fields: tuple[ElementField, ...],
+    local_key: str,
+    target_key: str,
+    target: _Cluster,
+    parent: _Cluster,
+) -> bool:
+    """Whether a foreign-keyed map value is a second copy of its target's row.
+
+    True when the value is keyed by the target's own primary key and every other
+    field it carries is one the target carries *independently*, from a source other
+    than this parent. Then the value holds nothing the target row does not, so it
+    is a copy. A value with any field of its own (a cart line's ``quantity``) is
+    its own fact and is kept.
+    """
+    if local_key != target_key:
+        return False
+    parent_sources = set(parent.sources)
+    for f in fields:
+        if f.name == local_key:
+            continue
+        if not (
+            {
+                s
+                for s in target.field_sources.get(f.name, set())
+                if s.rsplit(".", 1)[0] not in parent_sources
+            }
+        ):
+            return False
+    return True
+
+
 def _element_shape(
     clusters: dict[str, _Cluster],
     parent: _Cluster,
@@ -586,11 +618,14 @@ def _element_shape(
     point — the normalization decision is already made there, and today it is
     made and then discarded.
 
-    A map never comes back ``reference``. Its keys already are the referenced
-    identifiers, so the values stay an inline projection; the promotion is recorded
-    as a cross-reference annotation instead. Pinning the value shape is still worth
-    doing — tau2-retail seeded ``products[].variants`` as a third, flattened shape
-    matching neither the spec's variant nor the ``items`` row it duplicates.
+    A map whose values are a projection of another entity comes back ``reference``
+    with no ``link_fields``: the stored value is the target's id, keyed by that id.
+    That covers values that clustered into the target (``User.payment_methods``)
+    and values keyed by the target's own key that carry only fields the target
+    already carries (``Product.variants`` against ``items``; see
+    :func:`_map_value_copies_target`). Storing the record a second time is what let
+    one copy of a balance go stale. A map value with a field of its own stays
+    ``embedded``, with the foreign key recorded as an annotation.
 
     ``None`` means the spec declared no element shape, so nothing downstream should
     constrain it.
@@ -619,6 +654,19 @@ def _element_shape(
         if fk is None:
             return embedded
         local_key, target_collection, target_key = fk
+        if container == "map" and _map_value_copies_target(
+            fields, local_key, target_key, clusters[noun_for(local_key, "")], parent
+        ):
+            # Keyed by the target's own key and carrying nothing the target lacks:
+            # the value is a second copy of the target row (tau2-retail's
+            # Product.variants against `items`), so it is stored as the id.
+            return ElementShape(
+                kind="reference",
+                container=container,
+                target_collection=target_collection,
+                target_key=target_key,
+                local_key=local_key,
+            )
         return embedded.model_copy(
             update={
                 "local_key": local_key,
@@ -633,11 +681,17 @@ def _element_shape(
         # there is no collection to reference. Stored inline.
         return embedded
     if container == "map":
-        return embedded.model_copy(
-            update={
-                "target_collection": pluralize(noun),
-                "target_key": target.primary_key,
-            }
+        # The values clustered into the target, so every field they carry was
+        # absorbed into its row: storing them here too would be a second copy that
+        # drifts from the first (a gift-card balance updated in `payment_methods`
+        # and stale under `users[].payment_methods`). The map stores ids, keyed by
+        # id. Unlike an array, there is no link object to keep: whatever the value
+        # carried already lives on the target row.
+        return ElementShape(
+            kind="reference",
+            container=container,
+            target_collection=pluralize(noun),
+            target_key=target.primary_key,
         )
 
     # Fork 1: a pure projection of the target keeps nothing of its own, so the

@@ -66,13 +66,13 @@ class ElementShape(BaseModel):
     of its own) but one of its fields is a foreign key. That is a reference
     *annotation*, not the ``reference`` kind.
 
-    ``container`` says where the elements live, and the two differ in one way that
-    matters. An ``array`` of a promoted element stores *references*, so the
-    reference kind means bare identifiers (or a link object). A ``map`` is keyed by
-    the referenced identifier already, so its keys carry the reference and its
-    values stay an inline projection — a map is therefore never ``reference``; it
-    records ``target_collection``/``target_key`` as a cross-reference annotation
-    while staying ``embedded``.
+    ``container`` says where the elements live. An ``array`` reference stores a
+    list of bare identifiers (or link objects). A ``map`` reference stores a dict
+    of bare identifiers keyed by that same identifier, never a copy of the target
+    row, and never has ``link_fields``. A map is ``reference`` when its values are
+    a projection of the target (they clustered into it, or are keyed by its key and
+    carry only fields it carries). A map value with a field of its own stays
+    ``embedded`` and records the target as a foreign-key annotation.
 
     ``None`` on a field means undecidable — the element shape was not declared in
     the spec — and leaves the schema stage's ``items`` / ``additionalProperties``

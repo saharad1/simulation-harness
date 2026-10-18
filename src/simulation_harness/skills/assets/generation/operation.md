@@ -111,6 +111,11 @@ you read, then say so explicitly in both the store-access and the response steps
 (or as a list, when the response shape is an array). The nested objects' fields come from that
 other entity, projected to exactly the fields the response shape declares.
 
+A field whose `element.kind` is `reference` stores only ids of `element.target_collection` (a list
+for an array, an id-keyed map of ids for a map), never the records themselves. Read each record
+from that collection to build the response, and write any change (a balance, a stock flag) to that
+collection's record. Never store a copy inside the parent.
+
 Two failures to avoid:
 
 - **Do not fall back to an empty object or array** for a nested value the stores can populate.

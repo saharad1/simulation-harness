@@ -403,10 +403,13 @@ def test_map_of_scalars_is_pinned() -> None:
     assert (shape.container, shape.kind, shape.type) == ("map", "scalar", "string")
 
 
-def test_map_of_promoted_elements_stays_embedded_with_a_cross_reference() -> None:
-    """A map is keyed by the referenced identifier already, so its keys carry the
-    reference and its values stay an inline projection. Recording the target as an
-    annotation keeps that visible without claiming the values are identifiers."""
+def test_map_of_target_projections_stores_ids() -> None:
+    """A map value that only repeats its target's row is a second copy of it, so
+    the map stores ids keyed by id.
+
+    This replaces a test that asserted `embedded` with the fields inline. That
+    encoded the defect: `Product.variants` duplicated the `items` row and the two
+    copies drifted."""
     variant: dict = {
         "properties": {"item_id": {"type": "string"}, "price": {"type": "number"}}
     }
@@ -423,8 +426,8 @@ def test_map_of_promoted_elements_stays_embedded_with_a_cross_reference() -> Non
     }
     ident = derive_identity(schemas, synthetic=True)
     shape = _shapes(ident.entities, "Product")["variants"]
-    assert (shape.container, shape.kind) == ("map", "embedded")
-    assert [f.name for f in shape.fields] == ["item_id", "price"]
+    assert (shape.container, shape.kind) == ("map", "reference")
+    assert shape.fields == ()
     assert (shape.target_collection, shape.target_key) == ("items", "item_id")
     assert shape.link_fields == ()
 
