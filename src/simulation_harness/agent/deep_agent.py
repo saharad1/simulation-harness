@@ -438,6 +438,15 @@ class DeepAgent:
                 "error": "Internal error generating mock response",
                 "details": str(e),
             }
+        except BaseException:
+            # Anything that isn't an Exception -- most notably asyncio.CancelledError,
+            # raised when a client times out or disconnects mid-call -- still exits
+            # through here without a successful body. Restore the store before
+            # propagating so a cancelled call never leaves partial writes behind, then
+            # re-raise rather than swallow it: cancellation must keep propagating.
+            if store is not None:
+                store.restore(checkpoint)
+            raise
 
     def _find_operation(self, tool_name: str) -> OpenAPIOperation | None:
         """Find operation by tool name.

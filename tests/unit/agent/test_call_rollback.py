@@ -213,6 +213,45 @@ async def test_concurrent_error_does_not_erase_other_success(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_call_restores_store(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    """A call cancelled mid-flight (asyncio.CancelledError) still rolls back its write.
+
+    F3: ``asyncio.CancelledError`` is a ``BaseException``, not an ``Exception`` -- it is
+    raised when a client times out or disconnects, which is likely given LLM gateway
+    hangs. The old code only restored the checkpoint in ``except Exception``, so a
+    cancelled call skipped the restore and left its partial write committed. The fix
+    must restore the store on this path too, and must re-raise ``CancelledError``
+    rather than swallow it.
+    """
+    agent = _make_agent(mock_spec, mock_operation)
+    thread_id = "default"
+
+    before = agent.store_registry.for_thread(thread_id).snapshot()
+
+    async def _ainvoke(_input: Any, config: Any) -> dict:
+        store = agent.store_registry.for_thread(thread_id)
+        store.update(
+            "reservations",
+            "reservation_seed_001",
+            {"status": "cancelled"},
+        )
+        raise asyncio.CancelledError()
+
+    agent.agent.ainvoke = AsyncMock(side_effect=_ainvoke)
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.generate_response(
+            tool_name="exchangeItems",
+            arguments={"id": "reservation_seed_001"},
+            thread_id=thread_id,
+        )
+
+    assert agent.store_registry.for_thread(thread_id).snapshot() == before
+
+
+@pytest.mark.asyncio
 async def test_different_threads_not_serialized(
     mock_spec: Any, mock_operation: Any
 ) -> None:
