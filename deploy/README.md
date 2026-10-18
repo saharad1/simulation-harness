@@ -101,6 +101,7 @@ These override the values in the mounted `harness.yaml`:
 | `HARNESS_LLM_PROVIDER`                         | `llm.provider`                              |
 | `HARNESS_LLM_SKILL_GENERATION_MODEL`           | `llm.skill_generation_model`                |
 | `HARNESS_LLM_SIMULATION_MODEL`                 | `llm.simulation_model`                      |
+| `HARNESS_LLM_TEMPERATURE`                      | `llm.temperature` (0-2)                     |
 | `HARNESS_SERVER_HOST`                          | `server.host`                               |
 | `HARNESS_SERVER_PORT`                          | `server.port`                               |
 | `HARNESS_SKILLS_FOLDER`                        | `skills.folder`                             |
@@ -112,6 +113,8 @@ These override the values in the mounted `harness.yaml`:
 | `HARNESS_SESSIONS_MAX_MESSAGES`                | `sessions.max_messages`                     |
 | `HARNESS_SESSIONS_IDLE_TIMEOUT_SECONDS`        | `sessions.idle_timeout_seconds`             |
 | `HARNESS_SESSIONS_MAX_CONCURRENT_QUEUE_DEPTH`  | `sessions.max_concurrent_queue_depth`       |
+| `HARNESS_ABLATION_SKILL`                       | `ablation.skill` (`true`/`false`)            |
+| `HARNESS_ABLATION_STATE`                       | `ablation.state` (`true`/`false`)            |
 
 Each variable resolves in this order: **process environment** (a Kubernetes
 `env:` block, or an exported shell var), then a **`.env` file** in the working

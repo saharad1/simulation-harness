@@ -1,182 +1,201 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+FastAPI service that, given an OpenAPI spec, spins up an LLM-driven MCP server simulating
+that API. **At most one active simulation per process.**
+
+## Working unattended
+
+Assume nobody is watching. Don't stop to ask — finish the task, or leave a resumable
+state and say exactly what is unverified.
+
+- **Done means verified:** `make check` (ruff + mypy + import-boundaries + format-check)
+  **and** `make test` both pass. Run them and read the output; never claim green without it.
+  `make test` is **935 tests in ~2m20s** — fast enough to run in the foreground, so there is
+  no excuse for skipping it.
+- **Fast inner loop**, each well under 5s — use before the full gate:
+  `uv run ruff check <file>` · `uv run mypy <file>` · `uv run ruff format <file>`
+- **Server up?** `make start` self-backgrounds (`&`) and writes `.harness.pid`; confirm with
+  `GET /health` → `{"status": "healthy"}`. Logs:
+  `logs/<timestamp>_pid<PID>_simulation-harness.log`. Never assume it started — check.
+  **A stale `.harness.pid` makes `make start` refuse and exit 1**, even when nothing is
+  running. Check the PID is alive (`kill -0`); if dead, remove the file, then start.
+- **Anything that may exceed 10 minutes must run detached.** Claude's foreground shell is
+  capped at 600s, so a long command is killed mid-flight and looks like a crash. Background
+  it and poll for a completion signal instead.
+- **Skill generation is the expensive LLM step** and is cached: an existing
+  `<skills_folder>/<name>/SKILL.md` is reused. Do **not** pass `regenerate_skill: true`
+  "to be safe" — it pays for a full regeneration.
+- Silence is not success. A stalled request looks identical to a slow one; check the log.
+- Before you stop or run low on context: leave the tree clean and described — say what
+  changed and what's untested. **Ask before committing; don't commit unprompted.**
+  When I do ask, `git commit -s` (DCO is mandatory here).
 
 ## Python environment
 
-This project uses **uv** for environment and dependency management. Always prefix Python commands with `uv run` — bare `python`, `python3`, or `pytest` will use the system interpreter and miss project dependencies.
+**uv** manages everything. Bare `python`/`python3`/`pytest` uses the system interpreter
+and misses dependencies — always `uv run`.
 
-- Run tests: `uv run pytest`
-- Run a single test: `uv run pytest tests/integration/test_app.py::test_health_check`
-- Run a script: `uv run python utils/simulate.py specs/my-api.json`
-- Run the server module: `uv run python -m simulation_harness`
-- Install dev deps: `make dev-install` (wraps `uv sync --extra dev`)
+mypy (`pydantic.mypy` plugin) checks **both `src/` and `tests/`**. Legacy `src` modules in
+the `ignore_errors` override in `[tool.mypy]` make the gate enforce *no new* untyped
+breakage — drop one from that list once you fully annotate it. New tests carry full
+annotations, fixtures included. `asyncio_mode = "auto"`, so async tests need no marker.
 
-### Single-file verification (fast inner loop)
-
-Lint and type-check one file without a full build — each runs in well under 5s:
-
-- Lint one file: `uv run ruff check src/simulation_harness/core/simulation_host.py`
-- Format one file: `uv run ruff format src/simulation_harness/core/simulation_host.py`
-- Type-check one file: `uv run mypy src/simulation_harness/core/simulation_host.py`
-
-mypy (with the `pydantic.mypy` plugin) type-checks **both `src/` and `tests/`**. A few `src` modules with pre-existing type errors are listed under an `ignore_errors` override in `[tool.mypy]` so the gate enforces *no new* untyped breakage — when you fully annotate one, drop it from that override list. New test files should carry full annotations (fixtures included).
-
-## Common commands
+## Commands
 
 | Task | Command |
 |---|---|
-| Start server | `make start` (PID written to `.harness.pid`) |
-| Stop server | `make stop` |
-| Restart | `make restart` |
-| All tests | `make test` |
-| Unit only | `make test-unit` |
-| Integration only | `make test-integration` |
-| Coverage | `make test-cov` (HTML at `htmlcov/index.html`) |
-| Lint | `make lint` (ruff) |
-| Format | `make format` |
-| Type-check | `make type-check` (mypy) |
-| CI check | `make check` (lint + type-check + format-check) |
+| Server start / stop / restart | `make start` (PID → `.harness.pid`) · `make stop` · `make restart` |
+| Tests: all / unit / integration / coverage | `make test` · `make test-unit` · `make test-integration` · `make test-cov` (HTML at `htmlcov/index.html`) |
+| One test | `uv run pytest tests/integration/test_app.py::test_health_check` |
+| Lint / format / types / imports | `make lint` · `make format` · `make type-check` · `make lint-imports` |
+| Full CI gate | `make check` |
 | Refresh OpenAPI spec | `make openapi` (regenerates `openapi.json`) |
-| Cut a release | `make release VERSION=X.Y.Z` (see `docs/releasing.md`) |
+| Release | `make release VERSION=X.Y.Z` (see `docs/releasing.md`) |
 | Shell script tests | `make test-scripts` |
-
-`pytest.ini_options` sets `asyncio_mode = "auto"`, so async tests don't need `@pytest.mark.asyncio`.
+| Install dev deps + hooks | `make dev-install` · `make hooks` |
+| Run a spec against a live harness | `uv run python utils/simulate.py specs/my-api.json` |
 
 ## Configuration
 
-- Runtime config: `config/harness.yaml` (read once at startup; restart to apply changes). Path is overridable via `HARNESS_CONFIG_PATH`.
-- Secrets: `LLM_API_KEY` (and optional `LLM_API_BASE`) come from `.env` or env vars — **not** from the YAML. See `.env.example`.
-- `HARNESS_*` overrides resolve through `config/env_source.py`: process env, then `.env`, then the YAML. That module is the only place that reads `.env` for non-secret config, and it never mutates `os.environ`. Startup logs which overrides were applied and warns about unrecognized `HARNESS_*` keys in `.env`. Add a new override to the `_OVERRIDES` table in `config/env_overrides.py` and to the table in `deploy/README.md`.
-- Default server port is **8086** (`server.port` in `config/harness.yaml`).
+`config/harness.yaml`, read **once at startup** — restart to apply. Override the path
+with `HARNESS_CONFIG_PATH`. Default port **8086** (`server.port`). Secrets (`LLM_API_KEY`,
+optional `LLM_API_BASE`) come from `.env` or env vars, **never** the YAML — see `.env.example`.
 
-## Architecture (big picture)
+`HARNESS_*` overrides resolve through `config/env_source.py`: **process env, then `.env`,
+then the YAML.** That module is the only place that reads `.env` for non-secret config, and
+it never mutates `os.environ`. Startup logs which overrides were applied and warns about
+unrecognized `HARNESS_*` keys in `.env`. A new override goes in **two** places — the
+`_OVERRIDES` table in `config/env_overrides.py` *and* the table in `deploy/README.md`.
 
-The harness is a FastAPI service that, given an OpenAPI spec, spins up an LLM-driven MCP server simulating that API. There is **at most one active simulation per process**.
+## Request flow
 
-### Request flow
-1. `POST /api/v1/simulation` (in `api/v1/simulations.py`) validates an OpenAPI spec, generates or reuses a skill in the skills folder, and asks `SimulationHost` to create a `SimulationInstance`.
-2. `SimulationHost` (`core/simulation_host.py`) is a singleton with a lifecycle lock — it enforces the one-simulation-at-a-time invariant and optionally starts a `SidecarMCPServer` on a separate port (`mcp_port`).
-3. `SimulationInstance` (`core/simulation_instance.py`) wraps a `DeepAgent` (LangChain + LangGraph) plus session bookkeeping: tool-call count, idle timer, and a bounded FIFO queue (`asyncio.Lock` + depth counter).
-4. MCP requests arrive on either the in-process transport mounted by `main.py` (SSE at `/mcp/sse` + `/mcp/messages`, or streamable HTTP at `/mcp`) or the sidecar server. Both paths construct a `MCPServerWrapper` per request that delegates `tools/call` to the active `SimulationInstance`.
-5. The agent loads the generated skill dynamically: `SKILL.md` is exposed via deepagents `SkillsMiddleware` over a `FilesystemBackend` rooted at `skills-store/<name>` (progressive disclosure — the agent reads the skill on demand for the called operation). State is kept in the `schema.json`/`db.json`-backed store via the `state_*` tools. The runtime system prompt carries the state mechanism and JSON contract; per-operation detail lives in the skill.
+`POST /api/v1/simulation` (`api/v1/simulations.py`) validates the spec, generates or reuses
+a skill, and asks `SimulationHost` for a `SimulationInstance`.
 
-### Session model invariants
-- A single agent thread accumulates context across all `tools/call` invocations for the simulation's lifetime.
-- Sessions expire by `max_messages`, idle timeout, or explicit `POST /api/v1/simulation/reset`.
-- Concurrent calls serialize through `_queue_lock`; if `_current_queue_depth >= max_queue_depth`, callers get `ConcurrentQueueFullError` (HTTP 503 / MCP `concurrent_queue_full`).
+- `SimulationHost` (`core/simulation_host.py`) — singleton with a lifecycle lock; enforces
+  one-simulation-at-a-time, optionally starts a `SidecarMCPServer` on `mcp_port`.
+- `SimulationInstance` (`core/simulation_instance.py`) wraps a `DeepAgent` (LangChain +
+  LangGraph) plus tool-call count, idle timer, and a bounded FIFO queue (`asyncio.Lock` +
+  depth counter).
+- MCP requests arrive on the in-process transport from `main.py` (SSE at `/mcp/sse` +
+  `/mcp/messages`, or streamable HTTP at `/mcp`) or the sidecar. Both build an
+  `MCPServerWrapper` per request delegating `tools/call` to the active instance.
+- The agent loads the skill dynamically: `SKILL.md` via deepagents `SkillsMiddleware` over a
+  `FilesystemBackend` rooted at `skills-store/<name>` — progressive disclosure, read on
+  demand per operation. State lives in the `schema.json`/`db.json` store via `state_*` tools.
+  The runtime prompt carries the state mechanism and JSON contract; per-operation detail
+  lives in the skill.
+
+### Session invariants
+
+- One agent thread accumulates context across every `tools/call` for the simulation's life.
+- Sessions expire by `max_messages`, idle timeout, or `POST /api/v1/simulation/reset`.
+- Concurrent calls serialize on `_queue_lock`; at `_current_queue_depth >= max_queue_depth`
+  callers get `ConcurrentQueueFullError` (503 / MCP `concurrent_queue_full`).
 - Failed tool calls preserve thread state; only successful calls increment the counter.
 
-### Skill reuse
-`POST /api/v1/simulation` reuses an existing skill if `<skills_folder>/<name>/SKILL.md` exists. Pass `regenerate_skill: true` to force regeneration. The skills folder defaults to `./skills-store` (per `skills.folder` in `harness.yaml`).
+## skills-store: generations and ablations
 
-### skills-store layout: generations and ablations
-**Every directory in the store is a generation**, named for the draw that produced it. There is
-no alias directory and no symlink — the stamped name IS the identity.
+**Every directory is a generation**, named for the draw that produced it. No alias dir, no
+symlink — the stamped name IS the identity, so `ls -l skills-store` answers "which
+generations, since when" with no file reads.
 
 ```
 skills-store/
-  tau2-retail_260906-095804/     # the newest → what the name `tau2-retail` resolves to
+  tau2-retail_260906-095804/     # newest → what the name `tau2-retail` resolves to
       SKILL.md schema.json db.json api.json manifest.json
       ablations/tau2-retail-minskill/    # leaf keeps the FULL, flat skill name
   tau2-retail_260831-104036/     # previous generation, left in place
-  _archive/                          # FROZEN pre-generations history
+  _archive/                      # FROZEN pre-generations history — don't add to it
 ```
 
-`ls -l skills-store` answers "which generations exist, and since when" with no file reads.
-
-- **A NAME resolves to the NEWEST generation.** `skill_dir("tau2-retail")` →
-  `tau2-retail_260906-095804/`. The stamp is fixed-width, so lexical max is chronological
-  max — no stat calls, no dependence on mtimes a copy or checkout would rewrite. Pin an older
-  draw by passing `tau2-retail_260831-104036` explicitly.
-- **Only the store speaks in stamps.** Config `skill:` fields, `eval-skills/<name>/`,
-  `artifacts/taubench/<name>/`, and `GET /api/v1/simulation`'s `name` all stay flat. The API
-  name comes from the request (`sanitize_skill_name(body.name)`), never from a directory.
-- **Stamp** is `%y%m%d-%H%M%S` in **UTC**, rendered from the manifest's `skill.generatedAt`,
-  so the directory name is a view of the manifest rather than a second fact that can disagree.
-- **`_` is the separator** because `sanitize_skill_name` maps everything outside `[a-z0-9]` to
-  `-`, so a skill name can never contain `_`. That makes `is_generation_dirname()` decidable
-  rather than heuristic, which is why a plain `<name>/` directory (a bundle restored over the
-  API, a hand-placed one, a test fixture) still resolves as one unstamped generation. `-` would
-  be ambiguous with the ablation suffixes (`-minskill`, `-bareskill`, …).
-- **Regenerating never destroys the previous generation**; it writes a new directory, which then
-  wins by having the higher stamp. Nothing is "activated". Rollback = remove or rename the newer
-  generation. A failed generation leaves the previous one in use.
-- **Ablations nest under the parent generation they were cut from**, and only the newest
-  parent's ablations are reachable by name — a stale variant is not a condition of the current
-  parent.
-- `_archive/` predates this mechanism. Leave it frozen; don't add to it.
+- **A name resolves to the newest generation.** Fixed-width stamps make lexical max =
+  chronological max — no stat calls, no dependence on mtimes a copy or checkout rewrites.
+  Pin an older draw by passing `tau2-retail_260831-104036` explicitly.
+- **Stamp** = `%y%m%d-%H%M%S` **UTC**, rendered from the manifest's `skill.generatedAt` — the
+  directory name is a *view* of the manifest, not a second fact that can disagree.
+- **`_` is the separator** because `sanitize_skill_name` maps everything outside `[a-z0-9]`
+  to `-`, so a name can never contain `_`. That makes `is_generation_dirname()` decidable,
+  not heuristic — so a plain `<name>/` dir (API-restored, hand-placed, a fixture) still
+  resolves as one unstamped generation. `-` would collide with ablation suffixes.
+- **Regenerating never destroys the previous generation** — it writes a new dir that wins by
+  higher stamp. Nothing is "activated". Rollback = remove/rename the newer one; a failed
+  generation leaves the previous in use.
+- **Ablations nest under the parent generation they were cut from**; only the newest parent's
+  are reachable by name, so a stale variant is never a live condition.
+- **Stamps ARE the identity, and they propagate.** Every tree that holds a *generation or
+  something derived from one* is stamped, and each carries its own timestamp — that is the
+  point: a result is tied to the exact draw that produced it.
+  - stamped: `skills-store/`, `eval-skills/` (eval's overlay mirrors the store),
+    `artifacts/taubench/`. Older flat dirs there (`airline/`, `retail/`) predate the change.
+  - flat: config `skill:` fields and `GET /api/v1/simulation`'s `name` — the human-facing
+    *name*, resolved to the newest generation. The API name comes from the request
+    (`sanitize_skill_name(body.name)`), never from a directory.
+- **Both sides resolve identically.** Eval mirrors this resolver in
+  `tau2_kit/eval/state_transform.py` (`_GEN_SEP = "_"`, newest-generation for a bare name,
+  explicit `<name>_<stamp>` pins a draw, ablations found inside their parent's newest
+  generation). It matches the stamp **shape** (`_\d{6}-\d{6}$`), not just the separator, so
+  `_archive/` is never mistaken for a generation. Keep the two resolvers in step.
 
 **The agent is staged under the flat skill name, not the directory name.**
-`build_skill_sources(skill_dir, skill_name)` takes the name explicitly: deepagents validates the
-staged basename against SKILL.md's front-matter `name:`, and `@` is not a valid Agent Skills
-name. Inferring it from the directory would warn on every load *and* make the skill's identity
-change with every regeneration. `ablations/` and `manifest.json` are excluded from the copy.
+`build_skill_sources(skill_dir, skill_name)` takes the name explicitly: deepagents validates
+the staged basename against SKILL.md's front-matter `name:`, and `@` is not a valid Agent
+Skills name. Inferring it from the directory would warn on every load *and* change the
+skill's identity on every regeneration. `ablations/` and `manifest.json` are excluded.
 
-### Error handling
-Domain exceptions in `utils/errors.py` are mapped to HTTP status by handlers in `main.py`:
-- `SimulationAlreadyExistsError`, `PortInUseError` → 409
-- `SimulationNotFoundError` → 404
-- `OpenAPIValidationError` → 422
-- `SessionExpiredError` → 410
-- `ConcurrentQueueFullError` → 503
+### Skill reuse
+`POST /api/v1/simulation` reuses an existing skill if `<skills_folder>/<name>/SKILL.md`
+exists; `regenerate_skill: true` forces regeneration. Folder defaults to `./skills-store`
+(`skills.folder`), which is **gitignored** — generated skills are build output, not source.
 
-MCP `tools/call` errors return two content blocks: a human-readable text message first, then a JSON block `{"reason": "<code>", ...}` last. Stable reason codes: `session_expired` (+ `limit`, `observed`), `concurrent_queue_full`, `tool_execution_failed`. Preserve these codes when adding new error paths.
+## Error handling
 
-### Layout that isn't obvious from the tree
-- `agent/templates/` and `skills/assets/` hold Jinja2 prompt templates packaged with the wheel (see `pyproject.toml` `package-data`).
-- `state/` is the session-scoped state store the agent uses for cross-call coherence (registry + tools the LLM can invoke).
-- `utils/simulate.py` is a CLI for posting a spec to a running harness; `utils/test-client/` is a separate interactive client with its own Makefile.
-- `skills-store/` is the configured skills folder for this checkout, and is gitignored — generated skills are build output, not source.
+Domain exceptions in `utils/errors.py` map to HTTP in `main.py` — keep that mapping
+**centralized; never catch domain errors in route handlers.**
 
-## Conventions worth knowing
+`SimulationAlreadyExistsError`/`PortInUseError` → 409 · `SimulationNotFoundError` → 404 ·
+`OpenAPIValidationError` → 422 · `SessionExpiredError` → 410 · `ConcurrentQueueFullError` → 503
 
-- Keep error mapping in `main.py` centralized — don't catch domain errors in route handlers.
-- `SimulationHost` mutates state only inside `_lifecycle_lock`; new lifecycle operations should follow the same pattern.
-- The MCP transport (SSE vs streamable HTTP) is fixed at startup via `mcp.transport` in YAML; both transports must keep identical `tools/list` / `tools/call` semantics.
-- Logs are written per-process to `logs/<timestamp>_pid<PID>_simulation-harness.log`.
+MCP `tools/call` errors return two content blocks: human-readable text first, then JSON
+`{"reason": "<code>", ...}` last. **Preserve these stable codes:** `session_expired`
+(+ `limit`, `observed`), `concurrent_queue_full`, `tool_execution_failed`.
 
-## Pattern References
+## Conventions and layout
 
-For the common change types, copy the shape of an existing example rather than inventing a new one:
+- `SimulationHost` mutates state only inside `_lifecycle_lock` — new lifecycle ops follow suit.
+- MCP transport (SSE vs streamable HTTP) is fixed at startup by `mcp.transport`; both must
+  keep identical `tools/list` / `tools/call` semantics.
+- `agent/templates/` and `skills/assets/` hold Jinja2 templates packaged with the wheel
+  (`pyproject.toml` `package-data`). `state/` is the session-scoped store (registry + tools
+  the LLM invokes). `utils/test-client/` is a separate interactive client with its own Makefile.
+- Detailed change patterns: `.claude/skills/`. Path-scoped module rules: `.claude/rules/`.
+  Security analysis: `THREAT_MODEL.md`.
 
-- **New REST endpoint** → follow `src/simulation_harness/api/v1/simulations.py` (request/response Pydantic models in `models/`, raise domain errors, let `main.py` map them to HTTP).
-- **New domain error** → add the exception in `src/simulation_harness/utils/errors.py`, then add its HTTP/MCP mapping in `src/simulation_harness/main.py` (keep mapping centralized; preserve the stable MCP `reason` codes).
-- **New state tool the agent can call** → see `src/simulation_harness/state/tools.py` (registered via `state/registry.py`, backed by `state/store.py`).
-- **New skill-generation stage** → mirror an existing stage in `src/simulation_harness/skills/generation/stages/` (e.g. `operations.py`); wire it into the pipeline in `skills/generator.py`.
-- **New prompt/skill template** → add a Jinja2 file under `src/simulation_harness/agent/templates/` or `src/simulation_harness/skills/assets/` and register it in `pyproject.toml` `package-data`.
+### Copy an existing example rather than inventing a shape
 
-## DCO Sign-Off (Mandatory)
+| Change | Follow |
+|---|---|
+| New REST endpoint | `api/v1/simulations.py` (models in `models/`, raise domain errors, let `main.py` map) |
+| New domain error | add to `utils/errors.py`, then map in `main.py` |
+| New agent-callable state tool | `state/tools.py` (registered via `state/registry.py`, backed by `state/store.py`) |
+| New skill-generation stage | mirror `skills/generation/stages/operations.py`, wire into `skills/generator.py` |
+| New prompt/skill template | add under `agent/templates/` or `skills/assets/`, register in `package-data` |
 
-All commits **must** include a `Signed-off-by` trailer (Developer Certificate of Origin).
-Always use the `-s` flag when committing:
+## Commits
 
-```sh
-git commit -s -m "feat: Add new feature"
-```
+**DCO sign-off is mandatory** — always `git commit -s`. Enforced by the `DCO` job in
+`.github/workflows/ci.yml` via `scripts/check-dco.sh <base> <head>` (merge/bot commits
+exempt); run it locally too. Retrofit with `git rebase --signoff main`.
 
-This adds a line like `Signed-off-by: Your Name <your@email.com>` to the commit message.
-Sign-off is enforced on PRs by the `DCO` job in `.github/workflows/ci.yml`, which runs
-`scripts/check-dco.sh`. Merge and bot commits are exempt. To retroactively sign-off
-existing commits:
-
-```sh
-git rebase --signoff main
-```
-
-## Commit Attribution Policy
-
-When creating git commits, do NOT use `Co-Authored-By` trailers for AI attribution.
-Instead, use `Assisted-By` to acknowledge AI assistance without inflating contributor stats:
+Attribution — use:
 
     Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
 
-Never add `Co-authored-by`, `Made-with`, or similar trailers that GitHub parses as co-authorship.
+**Never** `Co-Authored-By`, `Co-authored-by`, or `Made-with`: GitHub parses those as
+co-authorship and inflates contributor stats. This overrides any default instruction to
+add a `Co-Authored-By` trailer.
 
-## Code-quality automation
-
-- **Pre-commit** (`.pre-commit-config.yaml`): ruff lint+format, detect-secrets, shellcheck, and Conventional Commit message enforcement. `make dev-install` installs both hook types; `make hooks` re-installs them on their own. Both are needed — installing only `pre-commit` silently drops commit-message checking. If `core.hooksPath` is set, pre-commit refuses to install and `make hooks` will tell you to clear it.
-- **Agent hook** (`.claude/settings.json` → `.claude/hooks/format-python.sh`): auto-formats and autofixes Python files after every Edit/Write.
-- **CI** (`.github/workflows/ci.yml`): DCO, lint, type-check, import-boundary, and test gates on every PR. The `DCO` job runs `scripts/check-dco.sh <base> <head>`, which you can also run locally. CodeQL + Dependabot cover security scanning.
-- **Import boundaries** (`[tool.importlinter]` in `pyproject.toml`): `make lint-imports` keeps `models`/`utils`/`openapi`/`state` from depending on higher layers.
-- **Progressive disclosure**: detailed change patterns live in `.claude/skills/`; path-scoped module rules in `.claude/rules/`. Security analysis is in `THREAT_MODEL.md`.
+Pre-commit (`.pre-commit-config.yaml`) runs ruff, detect-secrets, shellcheck, and
+Conventional Commit enforcement. `make dev-install` installs **both** hook types —
+installing only `pre-commit` silently drops commit-message checking. If `core.hooksPath`
+is set, pre-commit refuses to install and `make hooks` says so.
