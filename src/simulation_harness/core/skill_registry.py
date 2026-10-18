@@ -2,9 +2,8 @@
 
 import json
 import os
-import shutil
-import uuid
-from datetime import datetime, timezone
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +11,6 @@ import jsonschema
 
 from simulation_harness.skills.generation.naming import (
     GENERATION_SEP,
-    generation_stamp,
     is_generation_dirname,
     split_generation_dirname,
 )
@@ -79,6 +77,12 @@ _ABLATIONS_DIR = "ablations"
 # hand-placed one, a test fixture) as one unstamped generation.
 _GEN_SEP = GENERATION_SEP
 
+#: A PINNED ablation name: ``<parent>_<stamp>-<level>``, naming one draw's variant explicitly
+#: rather than resolving the parent's newest generation. ``level`` is the ablation suffix
+#: (`minskill`, `bareskill`, ...); it is ``\w+`` because that's the shape the generator writes,
+#: never containing `_` or `-` itself.
+_PINNED_ABLATION_RE = re.compile(r"(.+)_(\d{6}-\d{6})-(\w+)")
+
 
 class SkillRegistry:
     """Manages skill generation and reuse for simulations."""
@@ -100,11 +104,14 @@ class SkillRegistry:
 
         1. ``<name>@<stamp>`` -- an explicit generation, returned as-is. This is how an older
            draw is pinned for a comparison run.
-        2. The NEWEST ``<store>/<name>@*`` generation. This is the normal path: callers name a
+        2. ``<parent>@<stamp>-<level>`` -- an explicit PINNED ablation: naming one draw's variant
+           directly, rather than resolving the parent's newest generation. Resolves inside that
+           generation's `ablations/`, never the parent's newest.
+        3. The NEWEST ``<store>/<name>@*`` generation. This is the normal path: callers name a
            skill, the store decides which draw that currently means.
-        3. ``<store>/<name>/`` as a plain directory -- one unstamped generation (a bundle
+        4. ``<store>/<name>/`` as a plain directory -- one unstamped generation (a bundle
            restored over the API, a hand-placed one, a test fixture).
-        4. An ablation nested in the newest generation of some parent:
+        5. An ablation nested in the newest generation of some parent:
            ``<store>/<parent>@<stamp>/ablations/<name>/``.
 
         Falls back to ``<store>/<name>`` when nothing matches, so a MISSING skill reports a
@@ -115,6 +122,21 @@ class SkillRegistry:
         if is_generation_dirname(simulation_name):
             return top
         if not self.skills_folder.is_dir():
+            return top
+
+        # An explicit `<parent>@<stamp>-<level>`: pin the ablation to THAT generation, not
+        # whichever generation of `<parent>` happens to be newest right now.
+        pinned = _PINNED_ABLATION_RE.fullmatch(simulation_name)
+        if pinned is not None:
+            parent, stamp, level = pinned.groups()
+            nested = (
+                self.skills_folder
+                / f"{parent}{_GEN_SEP}{stamp}"
+                / _ABLATIONS_DIR
+                / f"{parent}-{level}"
+            )
+            if nested.is_dir():
+                return nested
             return top
 
         newest = self.newest_generation(simulation_name)
@@ -128,7 +150,11 @@ class SkillRegistry:
         # an ablation (`<parent>/ablations/../..` would escape the store); it falls through to
         # the top-level join, which is what this did for every name before nesting existed --
         # so this adds no traversal surface, it just declines to widen it.
-        if "/" in simulation_name or "\\" in simulation_name or simulation_name in (".", ".."):
+        if (
+            "/" in simulation_name
+            or "\\" in simulation_name
+            or simulation_name in (".", "..")
+        ):
             return top
         # Ablations are reached through their parent's NEWEST generation only. Every generation
         # keeps its own `ablations/`; resolving into a stale one would score an old variant
@@ -344,7 +370,9 @@ class SkillRegistry:
                 names.extend(
                     a.name
                     for a in sorted(ablations.iterdir())
-                    if a.is_dir() and not a.name.startswith(".") and self.is_complete(a.name)
+                    if a.is_dir()
+                    and not a.name.startswith(".")
+                    and self.is_complete(a.name)
                 )
         return sorted(names)
 
