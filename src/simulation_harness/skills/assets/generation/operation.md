@@ -118,9 +118,10 @@ collection's record. Never store a copy inside the parent.
 
 When a field's `element` names a `target_collection` and lists `target_key_fields` (in the
 schema, an `x-element-ref` with `key_fields`), a request item that carries those fields refers
-to the existing record in that collection whose key is those values joined by the separator
-(`|`), in that order; look it up there. Do not require the item to carry the stored record's
-other fields.
+to the existing record in that collection whose key is those values joined by the `separator`
+(currently `|`), in that order; look it up there. Do not require the item to carry the stored
+record's other fields. The element stays embedded: store its own fields in the parent as
+declared.
 
 Two failures to avoid:
 
