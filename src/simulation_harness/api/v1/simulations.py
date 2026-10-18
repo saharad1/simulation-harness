@@ -23,8 +23,14 @@ from simulation_harness.models.responses import (
     SimulationBundleResponse,
     SimulationResponse,
 )
+from simulation_harness.core.skill_registry import _PINNED_ABLATION_RE
 from simulation_harness.openapi.parser import OpenAPISpec, validate_openapi_dict
-from simulation_harness.skills.generation.naming import sanitize_skill_name
+from simulation_harness.skills.generation.naming import (
+    GENERATION_SEP,
+    is_generation_dirname,
+    sanitize_skill_name,
+    split_generation_dirname,
+)
 from simulation_harness.utils.errors import (
     OpenAPIValidationError,
     SimulationAlreadyExistsError,
@@ -33,6 +39,36 @@ from simulation_harness.utils.errors import (
 from simulation_harness.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _sanitize_resolution_name(name: str) -> str:
+    """Sanitize a name used to RESOLVE an existing skill, preserving a pinned generation stamp.
+
+    `sanitize_skill_name` maps every character outside `[a-z0-9]` to `-`, `GENERATION_SEP`
+    ("_") included. That is correct for a name that is about to be minted (a new skill, a new
+    generation), but wrong for a name that NAMES an existing draw: `<base>_<stamp>` or a
+    pinned ablation `<base>_<stamp>-<level>` must reach
+    the registry with its stamp intact, or `skill_dir` can never recognize it as pinned
+    (`is_generation_dirname` / `_PINNED_ABLATION_RE` both match on the literal `_<stamp>`
+    shape) and `/start` silently resolves to the newest generation instead of the one asked
+    for.
+
+    Only `<base>` (and, for a pinned ablation, `<level>`) is sanitized; `GENERATION_SEP` and
+    the stamp digits pass through untouched. Any other name is sanitized exactly as before.
+    """
+    pinned_ablation = _PINNED_ABLATION_RE.fullmatch(name)
+    if pinned_ablation is not None:
+        base, stamp, level = pinned_ablation.groups()
+        return (
+            f"{sanitize_skill_name(base)}{GENERATION_SEP}{stamp}"
+            f"-{sanitize_skill_name(level)}"
+        )
+
+    if is_generation_dirname(name):
+        base, stamp = split_generation_dirname(name)
+        return f"{sanitize_skill_name(base)}{GENERATION_SEP}{stamp}"
+
+    return sanitize_skill_name(name)
 
 
 def _build_mcp_url(request: Request, mcp_port: int | None) -> str:
@@ -266,7 +302,7 @@ async def start_simulation(
     simulation_host: SimulationHostDep,
     skill_registry: SkillRegistryDep,
 ) -> SimulationResponse:
-    simulation_name = sanitize_skill_name(body.name)
+    simulation_name = _sanitize_resolution_name(body.name)
     record = await simulation_host.start_simulation(
         name=simulation_name,
         mcp_port=body.mcp_port,

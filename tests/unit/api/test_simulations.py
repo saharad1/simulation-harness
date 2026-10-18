@@ -1078,6 +1078,63 @@ class TestStartSimulation:
         assert data["status"] == "pending"
         mock_simulation_host.start_simulation.assert_called_once()
 
+    async def test_start_preserves_generation_stamp(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+    ) -> None:
+        """A pinned draw name (`<base>_<stamp>`) must reach the registry byte for byte.
+
+        `sanitize_skill_name` maps `_` to `-`, which would turn this into a plain skill
+        name and lose the pin. The `/start` path must sanitize only the base, not the stamp.
+        """
+        pinned_name = "demo_260831-104036"
+        record = SimulationRecord.declare(name=pinned_name)
+        mock_simulation_host.start_simulation = AsyncMock(return_value=record)
+
+        resp = client.post("/api/v1/simulation/start", json={"name": pinned_name})
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["name"] == pinned_name
+        _, kwargs = mock_simulation_host.start_simulation.call_args
+        assert kwargs["name"] == pinned_name
+
+    async def test_start_preserves_pinned_ablation(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+    ) -> None:
+        """A pinned ablation name (`<base>_<stamp>-<level>`) must also reach the registry intact."""
+        pinned_name = "demo_260831-104036-minskill"
+        record = SimulationRecord.declare(name=pinned_name)
+        mock_simulation_host.start_simulation = AsyncMock(return_value=record)
+
+        resp = client.post("/api/v1/simulation/start", json={"name": pinned_name})
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["name"] == pinned_name
+        _, kwargs = mock_simulation_host.start_simulation.call_args
+        assert kwargs["name"] == pinned_name
+
+    async def test_start_still_sanitizes_plain_names(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+    ) -> None:
+        """A name with no generation stamp is sanitized exactly as before."""
+        record = SimulationRecord.declare(name="demo-name")
+        mock_simulation_host.start_simulation = AsyncMock(return_value=record)
+
+        resp = client.post("/api/v1/simulation/start", json={"name": "Demo Name"})
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["name"] == "demo-name"
+        _, kwargs = mock_simulation_host.start_simulation.call_args
+        assert kwargs["name"] == "demo-name"
+
 
 class TestGetSimulationBundle:
     """Tests for GET /api/v1/simulation/bundle endpoint."""
