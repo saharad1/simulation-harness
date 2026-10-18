@@ -280,6 +280,26 @@ class SimulationStore:
             result[store_name] = [copy.deepcopy(e) for e in entities.values()]
         return result
 
+    def checkpoint(self) -> dict:
+        """Capture the current state for a later restore().
+
+        Unlike snapshot() (store -> list of entities, a read-only API view),
+        this preserves the internal store -> pk -> entity shape so restore()
+        can swap it back in directly.
+
+        Returns:
+            A deep copy of the internal data, suitable for restore()
+        """
+        return copy.deepcopy(self._data)
+
+    def restore(self, cp: dict) -> None:
+        """Restore the store to a previously captured checkpoint.
+
+        Args:
+            cp: A checkpoint previously returned by checkpoint()
+        """
+        self._data = copy.deepcopy(cp)
+
     def _matches_where(self, entity: dict, where: dict) -> bool:
         """Check if an entity matches a where clause.
 

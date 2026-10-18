@@ -277,6 +277,11 @@ class DeepAgent:
             f"arguments={arguments}"
         )
 
+        # Populated once the thread's store is resolved below; stays None (and the
+        # outer except is then a no-op restore) if that resolution never happens.
+        store = None
+        checkpoint = None
+
         try:
             # Create prompt for this specific request
             request_prompt = self._create_request_prompt(operation, arguments)
@@ -301,6 +306,16 @@ class DeepAgent:
             # Add store_registry to config if available
             if self.store_registry:
                 config["configurable"]["store_registry"] = self.store_registry
+
+            # Checkpoint the thread's store before the call so a failed call (one whose
+            # final body is an "error" dict) can be rolled back to exactly how the store
+            # stood beforehand, undoing any state-tool writes the LLM made along the way.
+            store = (
+                self.store_registry.for_thread(effective_thread_id)
+                if self.store_registry
+                else None
+            )
+            checkpoint = store.checkpoint() if store is not None else None
 
             # Generate response using agent with session context.
             # Timed and metered: this await is where every simulated token is spent, and the
@@ -345,6 +360,10 @@ class DeepAgent:
                     f"Parsed response: tool={tool_name}, type={type(parsed_response).__name__}"
                 )
 
+                if isinstance(parsed_response, dict) and "error" in parsed_response:
+                    if store is not None:
+                        store.restore(checkpoint)
+
                 return parsed_response
 
             except json.JSONDecodeError as e:
@@ -352,6 +371,9 @@ class DeepAgent:
                     f"JSON parse error: tool={tool_name}, response={response_text[:500]}, "
                     f"error={str(e)}"
                 )
+
+                if store is not None:
+                    store.restore(checkpoint)
 
                 # Return error response
                 return {
@@ -364,6 +386,9 @@ class DeepAgent:
                 f"Agent error: tool={tool_name}, error={str(e)}",
                 exc_info=True,
             )
+
+            if store is not None:
+                store.restore(checkpoint)
 
             return {
                 "error": "Internal error generating mock response",

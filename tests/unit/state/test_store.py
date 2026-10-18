@@ -398,6 +398,38 @@ class TestIsolation:
         assert entities2[0]["name"] != "Modified"
 
 
+class TestCheckpointRestore:
+    """Test checkpoint/restore round-tripping, independent of the seed state."""
+
+    def test_restore_to_pre_call_not_seed(self, restaurant_store: Any) -> None:
+        """restore() rolls back to the checkpoint, not all the way to the seed."""
+        restaurant_store.insert(
+            "reservations",
+            {
+                "id": "res_temp",
+                "restaurant_id": "rest_001",
+                "restaurant_name": "The Italian Corner",
+                "date_time": "2024-01-01T19:00:00",
+                "party_size": 2,
+                "guest_name": "Checkpoint Tester",
+                "guest_phone": "+1-555-000-0000",
+                "guest_email": "tester@example.com",
+                "confirmation_code": "CP1234",
+                "created_at": "2024-01-01T00:00:00",
+                "status": "pending",
+            },
+        )  # earlier call, succeeded
+
+        cp = restaurant_store.checkpoint()
+
+        restaurant_store.update(
+            "reservations", "res_temp", {"status": "cancelled"}
+        )  # this call
+        restaurant_store.restore(cp)
+
+        assert restaurant_store.get("reservations", "res_temp")["status"] == "pending"
+
+
 class TestBadQueries:
     """Test error handling for malformed queries."""
 
