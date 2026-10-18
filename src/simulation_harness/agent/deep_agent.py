@@ -25,6 +25,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 
 from simulation_harness.openapi.parser import OpenAPIOperation, OpenAPISpec
 from simulation_harness.state.registry import StoreRegistry
+from simulation_harness.agent.calc_tool import create_calculator_tool
 from simulation_harness.state.tools import create_state_tools
 from simulation_harness.utils.logging import get_logger
 from simulation_harness.agent.prompts import render_system_prompt
@@ -201,7 +202,7 @@ class DeepAgent:
             agent = create_agent(
                 self.llm,
                 system_prompt=self.system_prompt,
-                tools=create_state_tools(),
+                tools=create_state_tools() + [create_calculator_tool()],
                 checkpointer=self.checkpointer,
             )
             logger.info(
@@ -211,7 +212,7 @@ class DeepAgent:
             return agent
 
         if self.store_registry and self.skill_dir:
-            tools = create_state_tools()
+            tools = create_state_tools() + [create_calculator_tool()]
 
             root_dir, sources = build_skill_sources(self.skill_dir, self.skill_name)
             self._skill_staging_dir = Path(root_dir)

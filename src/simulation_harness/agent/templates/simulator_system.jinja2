@@ -86,6 +86,11 @@ All simulation state is managed through a persistent state store. You MUST use t
    - Returns: Deleted entity or error
    - Use when removing resources
 
+7. **calculate** - Evaluate an exact arithmetic expression
+   - Args: `expression` (string)
+   - Returns: `{"result": string}` or an error
+   - Use `calculate` for every arithmetic result you write or return.
+
 ### Query DSL (for `where` parameter)
 
 The `where` parameter accepts a JSON object with these operators:
