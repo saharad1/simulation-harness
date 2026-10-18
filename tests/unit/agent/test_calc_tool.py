@@ -68,3 +68,13 @@ def test_create_calculator_tool_reports_errors_like_state_tools() -> None:
     result = tool.func(expression="1 / 0")
     assert isinstance(result, dict)
     assert "error" in result
+
+
+def test_deep_nesting_is_value_error() -> None:
+    with pytest.raises(ValueError):
+        calc("1" + "+1" * 3000)
+
+
+def test_long_expression_rejected() -> None:
+    with pytest.raises(ValueError):
+        calc("1" + "+1" * 1000)

@@ -24,6 +24,12 @@ from pydantic import BaseModel, Field
 
 _ALLOWED_FUNCS = {"round", "abs", "min", "max", "sum"}
 
+# A fixed cap on expression length, rejected before parsing. This also bounds
+# how deeply nested an expression can get (each level of nesting needs at
+# least one extra character), but RecursionError is still caught explicitly
+# below as a defense in depth against pathological inputs under the cap.
+_MAX_EXPRESSION_LENGTH = 2000
+
 
 class CalculatorArgs(BaseModel):
     """Arguments for the calculate tool."""
@@ -147,14 +153,24 @@ def calc(expression: str) -> dict:
     """Evaluate an arithmetic expression exactly and return ``{"result": str}``.
 
     Raises:
-        ValueError: on any disallowed syntax, name, call, or division by zero.
+        ValueError: on any disallowed syntax, name, call, division by zero,
+            or an expression that is too long or too deeply nested.
     """
-    try:
-        tree = ast.parse(expression, mode="eval")
-    except SyntaxError as e:
-        raise ValueError(f"invalid expression: {e}") from e
+    if len(expression) > _MAX_EXPRESSION_LENGTH:
+        raise ValueError(
+            f"expression too long: {len(expression)} > {_MAX_EXPRESSION_LENGTH} characters"
+        )
 
-    result = _eval_node(tree)
+    try:
+        try:
+            tree = ast.parse(expression, mode="eval")
+        except SyntaxError as e:
+            raise ValueError(f"invalid expression: {e}") from e
+
+        result = _eval_node(tree)
+    except RecursionError as e:
+        raise ValueError("expression too deeply nested") from e
+
     return {"result": str(result)}
 
 
@@ -186,6 +202,3 @@ def create_calculator_tool() -> StructuredTool:
         func=_calculate,
         args_schema=CalculatorArgs,
     )
-
-
-# Made with Bob
