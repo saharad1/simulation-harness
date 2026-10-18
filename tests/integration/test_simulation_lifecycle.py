@@ -811,8 +811,8 @@ def test_setup_then_start_then_tool_call(
             link.unlink()
         else:
             shutil.rmtree(link, ignore_errors=True)
-        for gen in skills_dir.glob(f"test-api{GENERATION_SEP}*"):
-            shutil.rmtree(gen, ignore_errors=True)
+        for gen_dir in skills_dir.glob(f"test-api{GENERATION_SEP}*"):
+            shutil.rmtree(gen_dir, ignore_errors=True)
 
 
 def test_start_without_artifacts_returns_404(app_client: Any) -> None:

@@ -162,7 +162,9 @@ def test_build_skill_sources_stages_under_the_flat_skill_name(tmp_path: Path) ->
     assert not (Path(root) / ".skills" / gen.name).exists()
 
 
-def test_build_skill_sources_strips_the_stamp_when_no_name_given(tmp_path: Path) -> None:
+def test_build_skill_sources_strips_the_stamp_when_no_name_given(
+    tmp_path: Path,
+) -> None:
     """Falling back to the basename still yields a valid name, not a stamped one."""
     from simulation_harness.agent.skill_backend import build_skill_sources
 

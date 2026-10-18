@@ -603,7 +603,6 @@ def test_list_complete_skills(
 def test_most_recent_complete_skill(
     discovery_registry: SkillRegistry, tmp_path: Path
 ) -> None:
-    import os
 
     _write_complete_skill(tmp_path, "old", {"openapi": "3.0.0"})
     _write_complete_skill(tmp_path, "new", {"openapi": "3.0.0"})
@@ -732,7 +731,9 @@ def test_skill_without_manifest_is_still_complete(
 # layout rests on; each corresponds to a way the old flat layout silently did the wrong thing.
 
 
-def _bake_generation(store: Path, name: str, stamp: str, generated_at: str | None = None) -> Path:
+def _bake_generation(
+    store: Path, name: str, stamp: str, generated_at: str | None = None
+) -> Path:
     """Write a complete bundle at ``<store>/<name>@<stamp>``."""
     d = store / f"{name}_{stamp}"
     _write_bundle(d)
@@ -793,9 +794,9 @@ def test_skill_dir_keeps_the_flat_basename(
     new = _bake_generation(temp_skills_dir, "demo", "260906-095804")
     registry = SkillRegistry(temp_skills_dir, mock_generator)
 
-    assert registry.skill_dir("demo") == new          # newest wins, not lexically-first
+    assert registry.skill_dir("demo") == new  # newest wins, not lexically-first
     assert registry.list_complete_skills() == ["demo"]
-    assert registry.skill_dir("demo_260831-104036") == old   # an explicit stamp pins it
+    assert registry.skill_dir("demo_260831-104036") == old  # an explicit stamp pins it
 
 
 def test_ablations_resolve_through_the_active_generation_only(

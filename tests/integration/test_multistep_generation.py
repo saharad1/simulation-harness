@@ -109,7 +109,7 @@ async def test_full_generation_writes_valid_bundle(tmp_path: Path) -> None:
             SPEC, "aha", tmp_path, progress_cb=phases.append
         )
 
-    skill_dir = result.parent   # the generation dir the generator wrote
+    skill_dir = result.parent  # the generation dir the generator wrote
     assert result == skill_dir / "SKILL.md"
     skill_md = (skill_dir / "SKILL.md").read_text()
     assert "name: aha" in skill_md
@@ -154,6 +154,6 @@ async def test_full_generation_disabled_scenarios(tmp_path: Path) -> None:
         result = await gen.generate_skill(SPEC, "aha", tmp_path)
 
     mock_scen.assert_not_called()
-    skill_dir = result.parent   # the generation dir the generator wrote
+    skill_dir = result.parent  # the generation dir the generator wrote
     assert not (skill_dir / "scenarios.json").exists()
     assert "## Example Scenarios" not in (skill_dir / "SKILL.md").read_text()
