@@ -112,9 +112,12 @@ you read, then say so explicitly in both the store-access and the response steps
 other entity, projected to exactly the fields the response shape declares.
 
 A field whose `element.kind` is `reference` stores only ids of `element.target_collection` (a list
-for an array, an id-keyed map of ids for a map), never the records themselves. Read each record
-from that collection to build the response, and write any change (a balance, a stock flag) to that
-collection's record. Never store a copy inside the parent.
+for an array, an id-keyed map of ids for a map), or, for an array whose element declares link
+fields, a link object of the id plus exactly those fields, never the records themselves. Read
+each record from that collection to build the response, and write any change (a balance, a stock
+flag) to that collection's record. Never store a copy inside the parent. When an operation creates
+or deletes a record in that collection on behalf of the parent, it also adds or removes that
+record's id in the parent's field, and lists both collections under Write.
 
 When a field's `element` names a `target_collection` and lists `target_key_fields` (in the
 schema, an `x-element-ref` with `key_fields`), a request item that carries those fields refers
