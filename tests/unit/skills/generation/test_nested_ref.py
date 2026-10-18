@@ -258,3 +258,55 @@ def test_seed_gate_accepts_a_map_of_ids_and_rejects_a_map_of_records() -> None:
     assert validate_schema_and_db(stamped, ids) == []
     errors = validate_schema_and_db(stamped, records)
     assert errors and "is not of type 'string'" in errors[0]
+
+
+def _order_lines(value_types: dict[str, str]) -> dict[str, dict]:
+    return {
+        "Item": {
+            "properties": {
+                "item_id": {"type": "string"},
+                "price": {"type": "number"},
+                "quantity": {"type": "integer"},
+            }
+        },
+        "Order": {
+            "properties": {
+                "order_id": {"type": "string"},
+                "lines": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "properties": {
+                            name: {"type": t} for name, t in value_types.items()
+                        }
+                    },
+                },
+            }
+        },
+    }
+
+
+def test_name_collision_with_matching_types_is_collapsed() -> None:
+    """Known, accepted limitation: a map value whose fields match the target's by
+    name AND type is treated as a copy, even if the spec meant a per-parent value
+    (an order line's own price and quantity). The rule cannot tell the two apart
+    from the spec alone. The eval-side seed gate (G3: no populated real field
+    dropped) is the backstop that makes such a collision fail loudly rather than
+    score."""
+    ir = _ir(
+        _order_lines({"item_id": "string", "price": "number", "quantity": "integer"})
+    )
+    shape = _field(ir, "Order", "lines").element
+    assert shape is not None
+    assert (shape.kind, shape.container) == ("reference", "map")
+
+
+def test_name_collision_with_different_type_stays_embedded() -> None:
+    """Same names, but `price` is a string here and a number on the target: the
+    value is not the target's row, so it keeps its fields."""
+    ir = _ir(
+        _order_lines({"item_id": "string", "price": "string", "quantity": "integer"})
+    )
+    shape = _field(ir, "Order", "lines").element
+    assert shape is not None
+    assert shape.kind == "embedded"
+    assert [f.name for f in shape.fields] == ["item_id", "price", "quantity"]

@@ -581,7 +581,13 @@ def _map_value_copies_target(
     field it carries is one the target carries *independently*, from a source other
     than this parent. Then the value holds nothing the target row does not, so it
     is a copy. A value with any field of its own (a cart line's ``quantity``) is
-    its own fact and is kept.
+    its own fact and is kept. Each such field must also have the same JSON type
+    as the target's field of that name; a type mismatch, or a target field with
+    no type, keeps the value embedded.
+
+    Limitation: the match is by name and type only, so a per-parent value whose
+    fields coincide with the target's in both (an order line's own ``price``)
+    is still collapsed into an id.
     """
     if local_key != target_key:
         return False
@@ -589,6 +595,10 @@ def _map_value_copies_target(
     for f in fields:
         if f.name == local_key:
             continue
+        # Both sides come from `_json_type`, so they compare directly.
+        target_type = target.fields.get(f.name)
+        if not target_type or target_type != f.type:
+            return False
         if not (
             {
                 s
