@@ -69,6 +69,7 @@ class DeepAgent:
         skill_name: str | None = None,
         agent_recursion_limit: int = 50,
         skill_enabled: bool = True,
+        streaming: bool = True,
     ):
         """Initialize Deep Agent.
 
@@ -89,6 +90,10 @@ class DeepAgent:
             skill_enabled: Load the compiled skill. False is the `no_skill` ablation: no
                 SkillsMiddleware and no skill files; the raw OpenAPI spec is put in the system
                 prompt instead. The state store and its tools are unaffected.
+            streaming: Stream chat completions (and stream_usage, so usage_metadata is
+                still populated). Defaults on: the shared LiteLLM gateway drops any
+                non-streamed `/chat/completions` request whose response takes longer
+                than about 10 seconds, while streamed requests of any length work.
         """
         self.spec = spec
         self.operations = operations
@@ -122,6 +127,8 @@ class DeepAgent:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "api_key": api_key,
+            "streaming": streaming,
+            "stream_usage": streaming,
         }
         if base_url is not None:
             llm_kwargs["base_url"] = base_url

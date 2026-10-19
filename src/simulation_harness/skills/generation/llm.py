@@ -67,12 +67,25 @@ def build_chat(
     max_tokens: int,
     base_url: str | None,
     json_mode: bool,
+    streaming: bool = True,
 ) -> ChatOpenAI:
+    """Build the shared ``ChatOpenAI`` client.
+
+    ``streaming``/``stream_usage`` default on: the shared LiteLLM gateway
+    (``ete-litellm``) drops any non-streamed `/chat/completions` request whose
+    response takes longer than about 10 seconds, while streamed requests of any
+    length work. ``stream_usage`` keeps ``usage_metadata`` populated on the
+    aggregated response so :mod:`simulation_harness.agent.usage` still gets
+    token counts. Pass ``streaming=False`` (or the ``llm.streaming`` /
+    ``HARNESS_LLM_STREAMING`` config switch) to go back to non-streamed calls.
+    """
     kwargs: dict[str, Any] = {
         "model": model,
         "api_key": api_key,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "streaming": streaming,
+        "stream_usage": streaming,
     }
     if json_mode:
         kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}

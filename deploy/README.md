@@ -101,6 +101,7 @@ These override the values in the mounted `harness.yaml`:
 | `HARNESS_LLM_PROVIDER`                         | `llm.provider`                              |
 | `HARNESS_LLM_SKILL_GENERATION_MODEL`           | `llm.skill_generation_model`                |
 | `HARNESS_LLM_SIMULATION_MODEL`                 | `llm.simulation_model`                      |
+| `HARNESS_LLM_STREAMING`                        | `llm.streaming` (`true`/`false`)            |
 | `HARNESS_SERVER_HOST`                          | `server.host`                               |
 | `HARNESS_SERVER_PORT`                          | `server.port`                               |
 | `HARNESS_SKILLS_FOLDER`                        | `skills.folder`                             |

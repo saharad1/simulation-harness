@@ -468,4 +468,48 @@ def test_empty_string_base_url_is_forwarded_not_silently_dropped(
         assert call_kwargs["base_url"] == ""
 
 
+def test_deep_agent_llm_streams_with_usage(
+    mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """The agent's own ChatOpenAI (self.llm) must stream, same as build_chat.
+
+    Streamed requests of any length survive the gateway's idle timeout on
+    non-streamed `/chat/completions` calls; defaults on.
+    """
+    with patch("simulation_harness.agent.deep_agent.ChatOpenAI") as mock_chat:
+        mock_chat.return_value = Mock()
+        DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.7,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+        )
+        call_kwargs = mock_chat.call_args[1]
+        assert call_kwargs["streaming"] is True
+        assert call_kwargs["stream_usage"] is True
+
+
+def test_deep_agent_llm_streaming_can_be_disabled(
+    mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    with patch("simulation_harness.agent.deep_agent.ChatOpenAI") as mock_chat:
+        mock_chat.return_value = Mock()
+        DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.7,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+            streaming=False,
+        )
+        call_kwargs = mock_chat.call_args[1]
+        assert call_kwargs["streaming"] is False
+        assert call_kwargs["stream_usage"] is False
+
+
 # Made with Bob

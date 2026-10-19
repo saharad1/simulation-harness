@@ -43,6 +43,7 @@ class SkillGenerator:
         model: str = "gpt-4.1",
         base_url: str | None = None,
         generation_config: GenerationConfig | None = None,
+        streaming: bool = True,
     ) -> None:
         """Initialize the skill generator.
 
@@ -51,6 +52,8 @@ class SkillGenerator:
             model: Model to use for generation.
             base_url: Optional base URL for API.
             generation_config: Multi-step pipeline tuning (defaults applied).
+            streaming: Stream chat completions for every pipeline stage. See
+                ``skills.generation.llm.build_chat`` for why this defaults on.
 
         Per-call temperature and output-token limits are not set here: the
         pipeline reads them per stage from ``generation_config``, so a single
@@ -60,6 +63,7 @@ class SkillGenerator:
         self.model = model
         self.base_url = base_url
         self.generation_config = generation_config or GenerationConfig()
+        self.streaming = streaming
 
     async def generate_skill(
         self,
@@ -109,6 +113,7 @@ class SkillGenerator:
                 base_url=self.base_url,
                 gen_config=self.generation_config,
                 model=self.model,
+                streaming=self.streaming,
                 progress_cb=progress_cb,
             )
             (temp_dir / "SKILL.md").write_text(bundle.skill_md)

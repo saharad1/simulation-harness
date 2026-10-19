@@ -48,6 +48,42 @@ def test_build_chat_text_mode_has_no_response_format() -> None:
         assert kwargs["base_url"] == "http://x"
 
 
+def test_build_chat_streams_with_usage() -> None:
+    """Streamed requests of any length survive the gateway's idle timeout on
+
+    non-streamed `/chat/completions` calls; both switches default on, and the
+    config switch (``llm.streaming``) can turn them off together.
+    """
+    with patch.object(llmmod, "ChatOpenAI") as mock:
+        build_chat(
+            api_key=SecretStr("k"),
+            model="m",
+            temperature=0.0,
+            max_tokens=100,
+            base_url=None,
+            json_mode=False,
+        )
+        kwargs = mock.call_args.kwargs
+        assert kwargs["streaming"] is True
+        assert kwargs["stream_usage"] is True
+
+
+def test_build_chat_streaming_can_be_disabled() -> None:
+    with patch.object(llmmod, "ChatOpenAI") as mock:
+        build_chat(
+            api_key=SecretStr("k"),
+            model="m",
+            temperature=0.0,
+            max_tokens=100,
+            base_url=None,
+            json_mode=False,
+            streaming=False,
+        )
+        kwargs = mock.call_args.kwargs
+        assert kwargs["streaming"] is False
+        assert kwargs["stream_usage"] is False
+
+
 @pytest.fixture(autouse=True)
 def _dotenv_free_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
@@ -129,6 +165,25 @@ async def test_call_json_wraps_length_truncation_as_structured_error() -> None:
     from openai import LengthFinishReasonError
 
     fake = MagicMock()
+    fake.ainvoke = AsyncMock(
+        side_effect=LengthFinishReasonError(completion=MagicMock())
+    )
+    with pytest.raises(StructuredCallError) as exc:
+        await call_json(fake, "sys", "usr")
+    assert "truncated" in str(exc.value).lower()
+
+
+async def test_streamed_truncation_still_structured_error() -> None:
+    """Streaming must not change the truncation contract: a reply that hits max_tokens
+
+    still raises `openai.LengthFinishReasonError` (per the controller's live-gateway
+    verification), and `call_json` must still turn that into `StructuredCallError`.
+    """
+    from openai import LengthFinishReasonError
+
+    fake = MagicMock()
+    fake.streaming = True
+    fake.stream_usage = True
     fake.ainvoke = AsyncMock(
         side_effect=LengthFinishReasonError(completion=MagicMock())
     )

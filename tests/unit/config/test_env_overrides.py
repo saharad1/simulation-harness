@@ -162,6 +162,11 @@ class TestLLMOverrides:
         out = apply_env_overrides(_base())
         assert out.llm.simulation_model == "openai/gpt-4o-mini"
 
+    def test_streaming_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HARNESS_LLM_STREAMING", "false")
+        out = apply_env_overrides(_base())
+        assert out.llm.streaming is False
+
     def test_generation_and_simulation_models_are_independent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

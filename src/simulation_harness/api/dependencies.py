@@ -43,6 +43,7 @@ def get_skill_registry() -> SkillRegistry:
             model=config.llm.skill_generation_model,
             base_url=secrets.llm_api_base,
             generation_config=config.generation,
+            streaming=config.llm.streaming,
         )
         _skill_registry = SkillRegistry(
             skills_folder=Path(config.skills.folder),

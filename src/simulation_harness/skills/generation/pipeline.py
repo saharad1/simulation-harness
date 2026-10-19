@@ -62,6 +62,7 @@ async def run_pipeline(
     base_url: str | None,
     gen_config: GenerationConfig,
     model: str,
+    streaming: bool = True,
     progress_cb: Callable[[str], None] | None = None,
 ) -> SkillBundle:
     cb = progress_cb or _noop
@@ -75,6 +76,7 @@ async def run_pipeline(
             max_tokens=params.max_tokens,
             base_url=base_url,
             json_mode=json_mode,
+            streaming=streaming,
         )
 
     # Stage 1 — analyze (extract → classify fan-out → merge; per-call timeouts inside)

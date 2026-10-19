@@ -43,6 +43,7 @@ class SimulationInstance:
         agent_recursion_limit: int = 50,
         skill_enabled: bool = True,
         mcp_port: int | None = None,
+        streaming: bool = True,
     ) -> None:
         """Initialize simulation instance.
 
@@ -61,6 +62,8 @@ class SimulationInstance:
             skill_enabled: Load the compiled skill (the method). False is the `no_skill`
                 ablation: the raw OpenAPI spec goes into the system prompt instead.
             mcp_port: Optional port for a sidecar MCP server on a separate port.
+            streaming: Stream chat completions for the agent's LLM. See
+                ``agent.deep_agent.DeepAgent`` for why this defaults on.
         """
         self.spec = spec
         self.mcp_port: int | None = mcp_port
@@ -98,6 +101,7 @@ class SimulationInstance:
             skill_name=spec.name,
             agent_recursion_limit=agent_recursion_limit,
             skill_enabled=skill_enabled,
+            streaming=streaming,
         )
 
         logger.info(

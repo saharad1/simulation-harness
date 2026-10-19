@@ -52,6 +52,7 @@ async def run_setup(
         model=config.llm.skill_generation_model,
         base_url=secrets.llm_api_base,
         generation_config=config.generation,
+        streaming=config.llm.streaming,
     )
     registry = SkillRegistry(
         skills_folder=Path(config.skills.folder), generator=generator

@@ -56,6 +56,7 @@ def _default_instance_factory(
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
         base_url=secrets.llm_api_base,
+        streaming=config.llm.streaming,
         skill_dir=skill_dir,
         agent_recursion_limit=config.sessions.agent_recursion_limit,
         skill_enabled=config.ablation.skill,

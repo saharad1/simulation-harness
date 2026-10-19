@@ -78,6 +78,10 @@ _OVERRIDES: Sequence[tuple[str, tuple[str, str], Callable[[str, str], Any]]] = (
     # editing YAML between them would make the runs order-dependent. Validated by the model
     # (0 <= t <= 2), so a typo fails at startup rather than silently sampling.
     ("HARNESS_LLM_TEMPERATURE", ("llm", "temperature"), _parse_float),
+    # Stream chat completions. Env-driven for the same reason: an operator must be able
+    # to flip this without editing the ConfigMap when the shared gateway's idle-timeout
+    # behavior (or a provider that can't stream) demands it.
+    ("HARNESS_LLM_STREAMING", ("llm", "streaming"), _parse_bool),
     ("HARNESS_SERVER_HOST", ("server", "host"), _parse_str),
     ("HARNESS_SERVER_PORT", ("server", "port"), _parse_int),
     ("HARNESS_SKILLS_FOLDER", ("skills", "folder"), _parse_str),
@@ -147,7 +151,7 @@ def apply_env_overrides(
       HARNESS_SESSIONS_MAX_CONCURRENT_QUEUE_DEPTH
       HARNESS_AUTOSTART_ENABLED, HARNESS_AUTOSTART_SIMULATION
       HARNESS_LLM_PROVIDER, HARNESS_LLM_SKILL_GENERATION_MODEL,
-      HARNESS_LLM_SIMULATION_MODEL, HARNESS_LLM_TEMPERATURE
+      HARNESS_LLM_SIMULATION_MODEL, HARNESS_LLM_TEMPERATURE, HARNESS_LLM_STREAMING
       HARNESS_ABLATION_SKILL, HARNESS_ABLATION_STATE
 
     Raises:

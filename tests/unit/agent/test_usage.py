@@ -45,7 +45,9 @@ class TestMessageUsage:
         assert u["total_tokens"] == 10
 
     def test_non_integer_counts_are_ignored_not_crashed(self):
-        u = message_usage({"usage_metadata": {"input_tokens": None, "output_tokens": "x"}})
+        u = message_usage(
+            {"usage_metadata": {"input_tokens": None, "output_tokens": "x"}}
+        )
         assert u["total_tokens"] == 0
 
 
@@ -53,7 +55,7 @@ class TestUsageMeter:
     def test_accumulates_across_calls(self):
         m = UsageMeter()
         m.record([_AI(inp=100, out=10)])
-        m.record([_AI(inp=100, out=10), _AI(inp=200, out=20)])   # history grew by one
+        m.record([_AI(inp=100, out=10), _AI(inp=200, out=20)])  # history grew by one
         snap = m.snapshot()
         assert snap["calls"] == 2
         assert snap["input_tokens"] == 300
@@ -68,7 +70,7 @@ class TestUsageMeter:
         for _ in range(4):
             history.append(_AI(inp=100, out=10))
             m.record(list(history))
-        assert m.snapshot()["input_tokens"] == 400      # not 1000
+        assert m.snapshot()["input_tokens"] == 400  # not 1000
 
     def test_returns_only_this_calls_usage(self):
         m = UsageMeter()
@@ -79,14 +81,14 @@ class TestUsageMeter:
     def test_threads_are_tracked_separately(self):
         m = UsageMeter()
         m.record([_AI(inp=10, out=1)], thread_id="a")
-        m.record([_AI(inp=20, out=2)], thread_id="b")   # index 0 of ITS own history
+        m.record([_AI(inp=20, out=2)], thread_id="b")  # index 0 of ITS own history
         assert m.snapshot()["input_tokens"] == 30
 
     def test_forget_thread_lets_a_cleared_history_be_counted_again(self):
         m = UsageMeter()
         m.record([_AI(inp=100, out=10), _AI(inp=100, out=10)])
-        m.forget_thread("default")                     # world reset: history cleared
-        m.record([_AI(inp=5, out=1)])                  # fresh first turn
+        m.forget_thread("default")  # world reset: history cleared
+        m.record([_AI(inp=5, out=1)])  # fresh first turn
         assert m.snapshot()["input_tokens"] == 205
 
     def test_a_shortened_history_without_forget_still_bills_the_new_turns(self):
@@ -119,7 +121,7 @@ class TestUsageMeter:
             "llm_seconds": 0.0,
             "model": None,
         }
-        m.record([_AI(inp=1, out=1)])          # still usable after a reset
+        m.record([_AI(inp=1, out=1)])  # still usable after a reset
         assert m.snapshot()["calls"] == 1
 
     def test_accumulates_seconds_and_keeps_the_model(self):
@@ -143,3 +145,20 @@ class TestUsageMeter:
         m.record([_AI(inp=1, out=1)], seconds=None)
         m.record([_AI(inp=1, out=1), _AI(inp=1, out=1)], seconds="slow")
         assert m.snapshot()["llm_seconds"] == 0.0
+
+    def test_streamed_usage_still_recorded(self):
+        """langchain's ChatOpenAI(streaming=True, stream_usage=True) aggregates the stream
+
+        into one AIMessage carrying usage_metadata, same shape as a non-streamed response.
+        The meter must count it exactly as it would a non-streamed call.
+        """
+        m = UsageMeter()
+        streamed_aggregate = _AI(inp=120, out=45, cached=10)
+        call = m.record([streamed_aggregate])
+        assert call == {
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "total_tokens": 165,
+            "cached_input_tokens": 10,
+        }
+        assert m.snapshot()["total_tokens"] == 165

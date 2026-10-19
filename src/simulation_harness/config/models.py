@@ -30,6 +30,14 @@ class LLMConfig(BaseModel):
     max_tokens: Optional[int] = Field(
         None, gt=0, description="Maximum tokens per request"
     )
+    streaming: bool = Field(
+        True,
+        description="Stream chat completions (and stream_usage, so usage_metadata "
+        "stays populated). The shared LiteLLM gateway drops any non-streamed "
+        "/chat/completions request whose response takes longer than about 10 "
+        "seconds; streamed requests of any length work. Off only for a provider/"
+        "gateway that cannot stream.",
+    )
 
 
 class SkillsConfig(BaseModel):
