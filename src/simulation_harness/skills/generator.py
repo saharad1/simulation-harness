@@ -12,6 +12,7 @@ from simulation_harness import __version__
 from simulation_harness.config.models import GenerationConfig
 from simulation_harness.skills.generation import run_pipeline
 from simulation_harness.skills.generation.repair import StageTimeoutError
+from simulation_harness.skills.generation.stage_cache import StageCache, cache_key
 from simulation_harness.skills.manifest import MANIFEST_FILENAME, build_manifest
 
 # Backward-compat re-export: these moved to skills.generation.naming, but
@@ -26,6 +27,9 @@ from simulation_harness.skills.generation.naming import (
 
 # Declared so the re-exports above read as intentional API rather than dead
 # imports, to both linters and readers.
+#: Where in-progress generations keep their stage outputs, under the skills folder.
+CACHE_DIRNAME = ".gen-cache"
+
 __all__ = [
     "SkillGenerator",
     "_FRONTMATTER_RE",
@@ -97,6 +101,13 @@ class SkillGenerator:
                 original exception via ``__cause__``).
         """
         temp_dir = skills_folder / f".{simulation_name}.tmp-{uuid.uuid4().hex[:8]}"
+        # Stage outputs survive a failed attempt so the next one resumes (see stage_cache).
+        # Dot-prefixed, so the registry never lists it as a skill. Cleared once this
+        # generation publishes, so a later regeneration is a fresh draw, not a replay.
+        key = cache_key(openapi_spec, self.model, self.generation_config)
+        cache = StageCache(
+            skills_folder / CACHE_DIRNAME / f"{simulation_name}-{key[:16]}"
+        )
         # The generation timestamp is decided up front so the manifest and the directory name
         # it is rendered into cannot disagree.
         generated_at = datetime.now(timezone.utc)
@@ -110,6 +121,7 @@ class SkillGenerator:
                 gen_config=self.generation_config,
                 model=self.model,
                 progress_cb=progress_cb,
+                cache=cache,
             )
             (temp_dir / "SKILL.md").write_text(bundle.skill_md)
             (temp_dir / "schema.json").write_text(json.dumps(bundle.schema, indent=2))
@@ -149,6 +161,7 @@ class SkillGenerator:
                     f"{final_dir.name}-{uuid.uuid4().hex[:8]}"
                 )
             temp_dir.rename(final_dir)
+            cache.clear()
             return final_dir / "SKILL.md"
         except Exception as e:
             if temp_dir.exists():

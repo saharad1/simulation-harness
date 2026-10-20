@@ -316,3 +316,90 @@ class TestScenariosJSON:
         # Against the dir the generator actually wrote -- a reconstructed flat path would make
         # this assertion pass vacuously.
         assert not (result.parent / "scenarios.json").exists()
+
+
+class TestStageCacheLifecycle:
+    """generate_skill keeps a failed generation's stage cache and clears a published one."""
+
+    @staticmethod
+    def _cache_dirs(root: Path) -> list[Path]:
+        base = root / ".gen-cache"
+        return sorted(base.iterdir()) if base.is_dir() else []
+
+    async def test_failed_generation_keeps_its_cache_dir(self, tmp_path: Path) -> None:
+        async def fails_after_analyze(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            kwargs["cache"].put("analyze", {"done": True})
+            raise RuntimeError("schema stalled")
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", fails_after_analyze):
+            with pytest.raises(RuntimeError):
+                await gen.generate_skill(SPEC, "aha", tmp_path)
+        dirs = self._cache_dirs(tmp_path)
+        assert len(dirs) == 1
+        name, _, key = dirs[0].name.rpartition("-")
+        assert name == "aha" and len(key) == 16
+        assert (dirs[0] / "analyze.json").exists()
+
+    async def test_retry_after_failure_resumes_from_the_cache(
+        self, tmp_path: Path
+    ) -> None:
+        seen: list[Any] = []
+
+        async def first(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            kwargs["cache"].put("analyze", {"done": True})
+            raise RuntimeError("schema stalled")
+
+        async def second(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs["cache"].get("analyze"))
+            return BUNDLE
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", first):
+            with pytest.raises(RuntimeError):
+                await gen.generate_skill(SPEC, "aha", tmp_path)
+        with patch.object(G, "run_pipeline", second):
+            await gen.generate_skill(SPEC, "aha", tmp_path)
+        assert seen == [{"done": True}]
+
+    async def test_successful_generation_removes_its_cache_dir(
+        self, tmp_path: Path
+    ) -> None:
+        async def ok(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            kwargs["cache"].put("analyze", {"done": True})
+            return BUNDLE
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", ok):
+            await gen.generate_skill(SPEC, "aha", tmp_path)
+        assert self._cache_dirs(tmp_path) == []
+
+    async def test_regenerate_after_success_starts_cold(self, tmp_path: Path) -> None:
+        """A regeneration after a publish must be a fresh draw, not a replay."""
+        seen: list[Any] = []
+
+        async def ok(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs["cache"].get("analyze"))
+            kwargs["cache"].put("analyze", {"done": True})
+            return BUNDLE
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", ok):
+            await gen.generate_skill(SPEC, "aha", tmp_path)
+            await gen.generate_skill(SPEC, "aha", tmp_path)
+        assert seen == [None, None]
+
+    async def test_cache_dir_is_not_listed_as_a_skill(self, tmp_path: Path) -> None:
+        from simulation_harness.core.skill_registry import SkillRegistry
+
+        async def fails(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            kwargs["cache"].put("analyze", {"done": True})
+            raise RuntimeError("stalled")
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", fails):
+            with pytest.raises(RuntimeError):
+                await gen.generate_skill(SPEC, "aha", tmp_path)
+        registry = SkillRegistry(skills_folder=tmp_path, generator=gen)
+        assert registry.generations("aha") == []
+        assert all(".gen-cache" not in s for s in registry.list_complete_skills())
