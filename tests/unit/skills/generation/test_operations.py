@@ -504,6 +504,8 @@ def test_rule_demanding_a_field_the_request_cannot_carry_is_rejected() -> None:
         # the line is a further condition naming a store (tau2-retail thin tier, 2026-10-20)
         "  - When `stay_id` is missing, malformed, or does not identify any record in `stays`:",
         "  - When `stay_id` is missing or does not match a record in `stays`:",
+        # a backticked JSON value is a value, not a demanded field (tau2-airline rich, 2026-10-20)
+        "  - `night`: omit setting it from store data; return its schema default `null`",
     ],
 )
 def test_legitimate_error_rules_are_untouched(line: str) -> None:

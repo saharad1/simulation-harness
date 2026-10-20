@@ -164,6 +164,8 @@ _ABSENT = re.compile(
 _TICKED = re.compile(r"`([A-Za-z_][\w.\[\]]*)`")
 #: "missing" with no object ("`x` is missing, malformed, or ..."): the subject itself is
 #: absent, so nothing after it is a demanded field.
+#: Backticked JSON values (`null`, `true`, ...) name a value, never a demanded field.
+_JSON_LITERALS = frozenset({"null", "true", "false", "none"})
 _NO_OBJECT = re.compile(r"(?i)^\s*(?:[,;:.]|(?:or|and)\b|$)")
 
 
@@ -203,7 +205,9 @@ def undefined_input_requirements(
                 continue
             if not any(_leaf(n) in allowed for n in _TICKED.findall(subject)):
                 continue
-            extra = sorted({_leaf(n) for n in _TICKED.findall(demanded)} - allowed)
+            extra = sorted(
+                {_leaf(n) for n in _TICKED.findall(demanded)} - allowed - _JSON_LITERALS
+            )
             if extra:
                 out.append(
                     f"{header}: rule rejects a request for lacking {extra}, which the "
