@@ -50,6 +50,9 @@ _FORBID_WRITE = re.compile(
     r"(?P<names>`[a-z_][a-z0-9_]*`(?:\s*,\s*|\s+or\s+)*(?:`[a-z_][a-z0-9_]*`(?:\s*,\s*|\s+or\s+)*)*)"
 )
 _BACKTICK_NAME = re.compile(r"`([a-z_][a-z0-9_]*)`")
+# "... in `users` other than `address`": a qualifier AFTER the name limits a write the
+# section makes rather than forbidding the collection, so the match is not a prohibition.
+_QUALIFIED = re.compile(r"(?i)\s*(?:other than|except|besides|apart from)\b")
 
 _SECTION_HEADER = re.compile(r"^### (?P<header>\S+ \S+)", re.M)
 
@@ -126,6 +129,8 @@ def _written_collections(section_body: str) -> set[str]:
 def _forbidden_collections(section_body: str) -> set[str]:
     names: set[str] = set()
     for m in _FORBID_WRITE.finditer(section_body):
+        if _QUALIFIED.match(section_body, m.end()):
+            continue
         names.update(_BACKTICK_NAME.findall(m.group("names")))
     return names
 

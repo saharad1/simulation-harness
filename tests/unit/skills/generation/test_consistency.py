@@ -210,3 +210,20 @@ def test_real_airline_skill_flags_book_reservation() -> None:
     assert any(
         "book_reservation writes reservations but not users" in e for e in errors
     )
+
+
+def test_qualified_prohibition_is_not_a_contradiction() -> None:
+    """ "Do not write any field in `users` other than `address`" limits a write; it does
+    not forbid one. Observed as a rejected tau2-retail rich draw (modify_user_address,
+    2026-10-20)."""
+    ir = _ir()
+    for qualifier in ("other than `reservation_id`", "except `reservation_id`"):
+        md = _skill_md(
+            store_access_section=(
+                "  - **Write `reservations`**\n"
+                f"  - Do not write any fields in `reservations` {qualifier}.\n"
+            )
+        )
+        assert not any(
+            "both writes and forbids" in e for e in check_consistency(ir, md)
+        )
