@@ -70,6 +70,7 @@ async def run_pipeline(
             max_tokens=params.max_tokens,
             base_url=base_url,
             json_mode=json_mode,
+            timeout=gen_config.request_timeout_seconds,
         )
 
     # Stage 1 — analyze (extract → classify fan-out → merge; per-call timeouts inside)

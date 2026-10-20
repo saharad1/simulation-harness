@@ -297,3 +297,43 @@ async def test_status_errors_are_not_retried_here(_no_backoff: list[float]) -> N
         await call_text(fake, "sys", "usr")
     assert fake.ainvoke.await_count == 1
     assert _no_backoff == []
+
+
+# ── per-request timeout: a hung generation call must be cut and retried ──────
+
+
+def test_build_chat_passes_timeout_when_set() -> None:
+    with patch.object(llmmod, "ChatOpenAI") as mock:
+        build_chat(
+            api_key=SecretStr("k"),
+            model="m",
+            temperature=0.0,
+            max_tokens=10,
+            base_url=None,
+            json_mode=False,
+            timeout=300,
+        )
+        assert mock.call_args.kwargs["timeout"] == 300
+
+
+def test_build_chat_omits_timeout_by_default() -> None:
+    with patch.object(llmmod, "ChatOpenAI") as mock:
+        build_chat(
+            api_key=SecretStr("k"),
+            model="m",
+            temperature=0.0,
+            max_tokens=10,
+            base_url=None,
+            json_mode=False,
+        )
+        assert "timeout" not in mock.call_args.kwargs
+
+
+async def test_call_text_retries_a_client_timeout(_no_backoff: list[float]) -> None:
+    """A timeout is an APIConnectionError subclass, so the same retry absorbs it."""
+    timeout = openai.APITimeoutError(
+        request=httpx.Request("POST", "https://gateway.example.com/v1/chat/completions")
+    )
+    fake = MagicMock()
+    fake.ainvoke = AsyncMock(side_effect=[timeout, MagicMock(content="ok")])
+    assert await call_text(fake, "sys", "usr") == "ok"

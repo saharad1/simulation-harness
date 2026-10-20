@@ -31,14 +31,21 @@ sessions:
   agent_recursion_limit: 50
 
 creation:
-  max_duration_seconds: 600
+  # Must exceed the generation's own stage limits below, or this outer budget fires first.
+  max_duration_seconds: 3600
 
 generation:
   concurrency: 5
   chunk_threshold: 40
   classify_batch_size: 40
   repair_retries: 2
-  stage_timeout_seconds: 420
+  # A hung gateway request is cut after request_timeout_seconds and retried (llm._ainvoke:
+  # 4 attempts, backoff 5/15/30 s). The stage limit must cover that whole budget —
+  # 4 x 300 + 50 = 1250 <= 1500 — or a stage dies before its retries run. Measured
+  # 2026-10-20: one 145 KB request took 992 s, the same request a minute later 8 s; the
+  # longest healthy reply (20 000 tokens) took 249 s.
+  request_timeout_seconds: 300
+  stage_timeout_seconds: 1500
 
   # Per-stage LLM tuning, in pipeline execution order. Stage 1 (extract →
   # enrich → classify) runs first; stages 2-6 then run concurrently in a

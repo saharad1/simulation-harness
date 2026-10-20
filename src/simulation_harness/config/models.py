@@ -146,6 +146,13 @@ class GenerationConfig(BaseModel):
     stage_timeout_seconds: int = Field(
         120, gt=0, description="Per individual LLM call timeout"
     )
+    # Bounds each generation request, so a gateway that accepts a call and never answers
+    # costs this long before llm._ainvoke retries it, instead of the whole stage budget.
+    # Unset keeps the client default (no timeout). Measured 2026-10-20: the same 145 KB
+    # request took 992 s once and 8 s a minute later; a 20 000-token reply took 249 s.
+    request_timeout_seconds: float | None = Field(
+        None, gt=0, description="Per-request timeout for generation LLM calls (seconds)"
+    )
     extract: StageParams = Field(default_factory=lambda: StageParams(max_tokens=8000))
     enrich: StageParams = Field(default_factory=lambda: StageParams(max_tokens=8000))
     classify: StageParams = Field(default_factory=lambda: StageParams(max_tokens=4000))

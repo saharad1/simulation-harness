@@ -68,6 +68,7 @@ def build_chat(
     max_tokens: int,
     base_url: str | None,
     json_mode: bool,
+    timeout: float | None = None,
 ) -> ChatOpenAI:
     kwargs: dict[str, Any] = {
         "model": model,
@@ -81,6 +82,9 @@ def build_chat(
         kwargs["base_url"] = base_url
     if _no_cache_requested():
         kwargs["extra_body"] = {"cache": {"no-cache": True}}
+    # Passed only when set, so an unconfigured pipeline keeps the client's own default.
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     return ChatOpenAI(**kwargs)
 
 

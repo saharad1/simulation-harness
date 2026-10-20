@@ -83,3 +83,30 @@ def test_shipped_harness_yaml_stage_temperatures() -> None:
     assert gen.scenarios.temperature == 0.4
     # behavior_enabled is not spelled out in the YAML; it must stay on by default
     assert gen.behavior_enabled is True
+
+
+def test_request_timeout_defaults_unset_and_must_be_positive() -> None:
+    assert GenerationConfig().request_timeout_seconds is None
+    with pytest.raises(ValueError):
+        GenerationConfig(request_timeout_seconds=0)
+
+
+def test_shipped_stage_timeout_covers_one_requests_retry_budget() -> None:
+    """A stage limit shorter than one request's retries would kill the stage before
+    its retries run — the defect that made 2026-10-20's regenerations all-or-nothing."""
+    from simulation_harness.skills.generation.llm import (
+        _CONNECTION_BACKOFF_SECONDS,
+        CONNECTION_ATTEMPTS,
+    )
+
+    repo_root = Path(__file__).resolve().parents[3]
+    data = yaml.safe_load((repo_root / "config" / "harness.yaml").read_text())
+    cfg = HarnessConfig(**data)
+    gen = cfg.generation
+    assert gen.request_timeout_seconds == 300
+    assert gen.stage_timeout_seconds == 1500
+    assert cfg.creation.max_duration_seconds == 3600
+    budget = CONNECTION_ATTEMPTS * gen.request_timeout_seconds + sum(
+        _CONNECTION_BACKOFF_SECONDS
+    )
+    assert budget <= gen.stage_timeout_seconds

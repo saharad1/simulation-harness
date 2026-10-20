@@ -325,3 +325,40 @@ def test_skill_bundle_carries_identity_provenance() -> None:
 
 def test_skill_bundle_identity_provenance_defaults_to_empty() -> None:
     assert P.SkillBundle(skill_md="x", schema={}, db={}).identity_provenance == {}
+
+
+async def test_run_pipeline_passes_request_timeout_to_every_client() -> None:
+    from simulation_harness.skills.generation.ir import Scenario
+
+    calls: list[dict] = []
+
+    def record(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return object()
+
+    with (
+        patch.object(P, "analyze", AsyncMock(return_value=_ir())),
+        patch.object(P, "generate_schema", AsyncMock(return_value=SCHEMA)),
+        patch.object(
+            P,
+            "generate_scenarios",
+            AsyncMock(return_value=[Scenario(title="t", intent="i")]),
+        ),
+        patch.object(P, "generate_behavior", AsyncMock(return_value="")),
+        patch.object(
+            P, "generate_seed", AsyncMock(return_value={"features": [{"id": "f1"}]})
+        ),
+        patch.object(
+            P, "generate_section", AsyncMock(return_value="### /features/{id} GET\nok")
+        ),
+        patch.object(P, "build_chat", side_effect=record),
+    ):
+        await P.run_pipeline(
+            SPEC,
+            "aha",
+            api_key=None,
+            base_url=None,
+            gen_config=GenerationConfig(request_timeout_seconds=77),
+            model="m",
+        )
+    assert calls and all(c.get("timeout") == 77 for c in calls), calls
