@@ -438,6 +438,7 @@ async def list_simulation_tools(
     summary="Get simulation state",
     responses={
         404: {"description": "No simulation exists"},
+        409: {"description": "No store (spec_only); body carries code=no_store"},
         503: {"description": "Simulation exists but is not ready yet"},
     },
 )
@@ -608,7 +609,10 @@ async def get_simulation_bundle(
     responses={
         200: {"description": "Database replaced; simulation reset"},
         404: {"description": "No simulation exists"},
-        409: {"description": "Tool calls are in flight; retry"},
+        409: {
+            "description": "Tool calls are in flight; retry. Or no store (spec_only): "
+            "code=no_store, db.json untouched"
+        },
         422: {"description": "Body does not validate against schema.json"},
         503: {"description": "Simulation exists but is not ready yet"},
     },

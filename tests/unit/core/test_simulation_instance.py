@@ -641,3 +641,51 @@ async def test_shutdown_stops_sidecar_when_present(
 
 
 # Made with Bob
+
+
+def test_state_enabled_forwarded_to_agent(mock_spec: SimulationSpec) -> None:
+    """`spec_only`: the instance builds its agent without a store and remembers that it did."""
+    with patch(
+        "simulation_harness.core.simulation_instance.DeepAgent"
+    ) as mock_deep_agent:
+        instance = create_instance(mock_spec, skill_enabled=False, state_enabled=False)
+    assert mock_deep_agent.call_args.kwargs["state_enabled"] is False
+    assert instance.state_enabled is False
+
+
+def test_state_enabled_defaults_true(mock_spec: SimulationSpec) -> None:
+    with patch(
+        "simulation_harness.core.simulation_instance.DeepAgent"
+    ) as mock_deep_agent:
+        instance = create_instance(mock_spec)
+    assert mock_deep_agent.call_args.kwargs["state_enabled"] is True
+    assert instance.state_enabled is True
+
+
+def test_state_snapshot_without_store_raises_store_disabled(
+    mock_spec: SimulationSpec, mock_agent: MagicMock
+) -> None:
+    """There is no world to snapshot: say so, rather than an empty `{}` a client would read as
+    "the store is empty"."""
+    from simulation_harness.utils.errors import StoreDisabledError
+
+    mock_agent.store_registry = None
+    with patch(
+        "simulation_harness.core.simulation_instance.DeepAgent", return_value=mock_agent
+    ):
+        instance = create_instance(mock_spec, skill_enabled=False, state_enabled=False)
+    with pytest.raises(StoreDisabledError, match="spec_only"):
+        instance.get_state_snapshot("default")
+
+
+@pytest.mark.asyncio
+async def test_reset_session_without_store_is_clean(
+    mock_spec: SimulationSpec, mock_agent: MagicMock
+) -> None:
+    mock_agent.store_registry = None
+    with patch(
+        "simulation_harness.core.simulation_instance.DeepAgent", return_value=mock_agent
+    ):
+        instance = create_instance(mock_spec, skill_enabled=False, state_enabled=False)
+    await instance.reset_session()
+    mock_agent.reset.assert_awaited_once()

@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TransportType(str, Enum):
@@ -57,7 +57,7 @@ class AblationConfig(BaseModel):
     2x2 ablation grid used to attribute fidelity to the components:
 
         skill=T state=T  full method (default)
-        skill=T state=F  semantic contract, no persistent world
+        skill=T state=F  semantic contract, no persistent world (refused, see below)
         skill=F state=T  seed corpus + state tools, no operation contract
         skill=F state=F  spec-only emulation (the ToolEmu-style baseline)
 
@@ -77,6 +77,19 @@ class AblationConfig(BaseModel):
         "(state_* tools). When False the agent has no persistence and must "
         "fabricate every response from the request alone.",
     )
+
+    @model_validator(mode="after")
+    def _refuse_skill_without_state(self) -> "AblationConfig":
+        # A compiled skill's contracts are written against the store (read this entity, write
+        # that one). Without one the simulator is told to use tools it does not have, which
+        # measures nothing we report. Refused here, at config load, so the process never starts
+        # and the status endpoint never reports a condition nobody runs.
+        if self.skill and not self.state:
+            raise ValueError(
+                "HARNESS_ABLATION_STATE=false requires HARNESS_ABLATION_SKILL=false: "
+                "skill=on,state=off is not a supported condition (spec_only is skill=off,state=off)"
+            )
+        return self
 
     @property
     def label(self) -> str:

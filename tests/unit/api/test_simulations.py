@@ -107,6 +107,7 @@ def app(mock_simulation_host: MagicMock, mock_skill_registry: MagicMock) -> Fast
         DatabaseValidationError,
         SimulationArtifactsNotFoundError,
         SimulationBusyError,
+        StoreDisabledError,
     )
 
     # Add domain error handlers (mirrors main.py)
@@ -140,6 +141,15 @@ def app(mock_simulation_host: MagicMock, mock_skill_registry: MagicMock) -> Fast
         return JSONResponse(
             status_code=422,
             content={"detail": str(exc), "json_path": exc.json_path},
+        )
+
+    @app.exception_handler(StoreDisabledError)
+    async def store_disabled_handler(
+        request: pytest.FixtureRequest, exc: StoreDisabledError
+    ) -> Any:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc), "code": exc.code},
         )
 
     @app.exception_handler(SimulationBusyError)
@@ -1207,3 +1217,89 @@ class TestGetSimulationBundle:
 
 
 # Made with Bob
+
+
+class TestSpecOnlyWithoutStore:
+    """`spec_only` (state=false): every store endpoint answers 409 with a recognisable code,
+    never a 500 and never an empty `{}` that reads as an empty world."""
+
+    @staticmethod
+    def _ready(instance: MagicMock) -> SimulationRecord:
+        record = SimulationRecord.declare(name="demo-api")
+        record.transition(SimulationStatus.INITIALIZING, phase="agent_init")
+        record.mark_ready(instance)
+        return record
+
+    async def test_get_state_returns_409(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        mock_simulation_instance: MagicMock,
+    ) -> None:
+        from simulation_harness.utils.errors import StoreDisabledError
+
+        mock_simulation_instance.get_state_snapshot.side_effect = StoreDisabledError()
+        mock_simulation_host.get_record = AsyncMock(
+            return_value=self._ready(mock_simulation_instance)
+        )
+
+        resp = client.get("/api/v1/simulation/state")
+
+        assert resp.status_code == 409
+        assert resp.json()["code"] == "no_store"
+        assert "spec_only" in resp.json()["detail"]
+
+    async def test_put_database_returns_409(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        mock_simulation_instance: MagicMock,
+    ) -> None:
+        from simulation_harness.utils.errors import StoreDisabledError
+
+        mock_simulation_host.get_record = AsyncMock(
+            return_value=self._ready(mock_simulation_instance)
+        )
+        mock_simulation_host.replace_database = AsyncMock(
+            side_effect=StoreDisabledError()
+        )
+
+        resp = client.put("/api/v1/simulation/database", json={"items": []})
+
+        assert resp.status_code == 409
+        assert resp.json()["code"] == "no_store"
+
+    async def test_reset_still_succeeds(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        mock_simulation_instance: MagicMock,
+    ) -> None:
+        mock_simulation_host.get_record = AsyncMock(
+            return_value=self._ready(mock_simulation_instance)
+        )
+        resp = client.post("/api/v1/simulation/reset")
+        assert resp.status_code == 200
+
+    async def test_status_reports_toggles_verbatim(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        mock_simulation_instance: MagicMock,
+    ) -> None:
+        from unittest.mock import patch
+
+        cfg = MagicMock()
+        cfg.ablation.skill = False
+        cfg.ablation.state = False
+        cfg.llm.temperature = 0.0
+        cfg.llm.max_tokens = None
+        mock_simulation_host.get_record = AsyncMock(
+            return_value=self._ready(mock_simulation_instance)
+        )
+        with patch(
+            "simulation_harness.api.v1.simulations.get_config", return_value=cfg
+        ):
+            resp = client.get("/api/v1/simulation")
+        assert resp.status_code == 200
+        assert resp.json()["components"] == {"skill": False, "state": False}

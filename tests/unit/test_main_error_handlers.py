@@ -53,6 +53,13 @@ def app_with_env(monkeypatch: pytest.MonkeyPatch) -> Any:
                 message="'name' is a required property", json_path="restaurants.0"
             )
 
+    if "/_boom_no_store" not in paths:
+        from simulation_harness.utils.errors import StoreDisabledError
+
+        @m.app.get("/_boom_no_store")
+        async def _boom_no_store() -> dict:
+            raise StoreDisabledError()
+
     if "/_boom_busy" not in paths:
 
         @m.app.get("/_boom_busy")
@@ -76,3 +83,13 @@ def test_simulation_busy_error_maps_to_409(app_with_env: Any) -> None:
     assert resp.status_code == 409
     body = resp.json()
     assert body["queue_depth"] == 2
+
+
+def test_store_disabled_error_maps_to_409(app_with_env: Any) -> None:
+    """`spec_only` has no store: a store endpoint answers 409 `no_store`, never 500."""
+    with TestClient(app_with_env) as client:
+        resp = client.get("/_boom_no_store")
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "no_store"
+    assert "spec_only" in body["detail"]

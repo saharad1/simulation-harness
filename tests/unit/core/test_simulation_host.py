@@ -698,9 +698,9 @@ async def test_start_simulation_missing_artifacts_raises(
 # Made with Bob
 
 
-def test_default_factory_refuses_unimplemented_state_ablation(tmp_path) -> None:
-    """state=False has no implementation: the factory must refuse, not serve the full method
-    while the status endpoint reports state=false."""
+def test_default_factory_refuses_state_off_with_skill_on(tmp_path) -> None:
+    """skill=True, state=False is not a supported condition: the factory refuses it (config
+    load refuses it first; this guards a config built some other way)."""
     from unittest.mock import MagicMock, patch
 
     from simulation_harness.core import simulation_host
@@ -719,4 +719,49 @@ def test_default_factory_refuses_unimplemented_state_ablation(tmp_path) -> None:
         except ValueError as e:
             assert "HARNESS_ABLATION_STATE" in str(e)
         else:
-            raise AssertionError("state=False must be refused")
+            raise AssertionError("skill=True, state=False must be refused")
+
+
+def test_default_factory_builds_spec_only_without_a_store(tmp_path) -> None:
+    """skill=False, state=False (`spec_only`) builds an instance with the store disabled."""
+    from unittest.mock import MagicMock, patch
+
+    from simulation_harness.core import simulation_host
+
+    cfg = MagicMock()
+    cfg.ablation.state = False
+    cfg.ablation.skill = False
+    with (
+        patch.object(simulation_host, "get_config", return_value=cfg),
+        patch.object(simulation_host, "get_secrets", return_value=MagicMock()),
+        patch.object(simulation_host, "SimulationInstance") as mock_instance,
+    ):
+        simulation_host._default_instance_factory(
+            simulation_name="x", openapi_spec={}, skill_dir=tmp_path, mcp_port=None
+        )
+    kwargs = mock_instance.call_args.kwargs
+    assert kwargs["skill_enabled"] is False
+    assert kwargs["state_enabled"] is False
+
+
+async def test_replace_database_refused_without_a_store(tmp_path) -> None:
+    """`spec_only` has no store to seed: PUT /simulation/database must not touch db.json (the
+    skill dir may be shared with other harnesses) and must say why."""
+    from unittest.mock import MagicMock
+
+    from simulation_harness.core.simulation_record import SimulationRecord
+    from simulation_harness.utils.errors import StoreDisabledError
+
+    host = SimulationHost()
+    record = SimulationRecord.declare(name="demo")
+    record.transition(SimulationStatus.INITIALIZING, phase="agent_init")
+    instance = MagicMock()
+    instance.state_enabled = False
+    record.mark_ready(instance)
+    host._record = record
+    registry = MagicMock()
+
+    with pytest.raises(StoreDisabledError, match="spec_only"):
+        await host.replace_database(new_db={"x": []}, skill_registry=registry)
+    registry.write_db.assert_not_called()
+    instance.reset_session.assert_not_called()

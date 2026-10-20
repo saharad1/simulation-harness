@@ -19,6 +19,7 @@ from simulation_harness.utils.errors import (
     SimulationBusyError,
     SimulationNotFoundError,
     SimulationNotReadyError,
+    StoreDisabledError,
 )
 from simulation_harness.utils.logging import get_logger
 
@@ -37,13 +38,14 @@ def _default_instance_factory(
 
     config = get_config()
     secrets = get_secrets()
-    # `state=False` (no store, no seed) has no implementation on this branch. Refuse rather than
-    # serve the full method under a label that says otherwise: a mislabeled condition corrupts
-    # every comparison built on it, and the status endpoint reports these toggles verbatim.
-    if not config.ablation.state:
+    # `state=False` is implemented only as `spec_only` (skill=False too). AblationConfig refuses
+    # skill=True/state=False at config load; this guards a config built some other way, since the
+    # status endpoint reports these toggles verbatim and a mislabeled condition corrupts every
+    # comparison built on it.
+    if config.ablation.skill and not config.ablation.state:
         raise ValueError(
-            "HARNESS_ABLATION_STATE=false is not implemented on this branch; refusing to start "
-            "a simulation that would report state=false while running with a store"
+            "HARNESS_ABLATION_STATE=false requires HARNESS_ABLATION_SKILL=false (spec_only); "
+            "refusing to start skill=on,state=off"
         )
     spec = SimulationSpec(name=simulation_name, openapi_spec=openapi_spec)
     return SimulationInstance(
@@ -59,6 +61,7 @@ def _default_instance_factory(
         skill_dir=skill_dir,
         agent_recursion_limit=config.sessions.agent_recursion_limit,
         skill_enabled=config.ablation.skill,
+        state_enabled=config.ablation.state,
         mcp_port=mcp_port,
         request_timeout_seconds=config.llm.request_timeout_seconds,
         max_retries=config.llm.max_retries,
@@ -336,6 +339,7 @@ class SimulationHost:
             SimulationNotReadyError: simulation not yet READY
             SimulationBusyError: tool calls are in flight (queue_depth > 0)
             DatabaseValidationError: new_db does not validate against schema.json
+            StoreDisabledError: the simulation has no store (`spec_only`); db.json is untouched
         """
         async with self._lifecycle_lock:
             record = self._record
@@ -345,6 +349,10 @@ class SimulationHost:
                 raise SimulationNotReadyError(
                     name=record.name, status=record.status.value
                 )
+            # Nothing reads db.json without a store, and the skill dir may be shared with other
+            # harnesses: refuse before writing anything.
+            if not record.instance.state_enabled:
+                raise StoreDisabledError()
 
             session_state = record.instance.get_session_state()
             if session_state.queue_depth > 0:
