@@ -69,6 +69,7 @@ class DeepAgent:
         skill_name: str | None = None,
         agent_recursion_limit: int = 50,
         skill_enabled: bool = True,
+        state_enabled: bool = True,
         streaming: bool = True,
     ):
         """Initialize Deep Agent.
@@ -90,6 +91,9 @@ class DeepAgent:
             skill_enabled: Load the compiled skill. False is the `no_skill` ablation: no
                 SkillsMiddleware and no skill files; the raw OpenAPI spec is put in the system
                 prompt instead. The state store and its tools are unaffected.
+            state_enabled: Build the state store. False (only with ``skill_enabled=False``)
+                is the `spec_only` reference: no StoreRegistry, no state tools, no seed; the
+                simulator answers each call from the raw spec and the thread's history alone.
             streaming: Stream chat completions (and stream_usage, so usage_metadata is
                 still populated). Defaults on: the shared LiteLLM gateway drops any
                 non-streamed `/chat/completions` request whose response takes longer
@@ -102,6 +106,14 @@ class DeepAgent:
         self.skill_name = skill_name
         self.agent_recursion_limit = agent_recursion_limit
         self.skill_enabled = skill_enabled
+        self.state_enabled = state_enabled
+        # A compiled skill's contracts are written against the store; serving one without it is
+        # not a condition anything measures. AblationConfig refuses this at config load too.
+        if skill_enabled and not state_enabled:
+            raise ValueError(
+                "state_enabled=False requires skill_enabled=False (spec_only); "
+                "skill=on,state=off is not a supported condition"
+            )
 
         # Cumulative LLM spend for this simulation, read over the API as
         # /api/v1/simulation/usage. Lives on the agent because the agent is what makes the
@@ -137,11 +149,14 @@ class DeepAgent:
 
         # Render system prompt
         # `no_skill`: the spec itself, unmodified, is the only description of the API.
+        # `spec_only` additionally drops every state-tool instruction: there are none to call.
         if skill_enabled:
             self.system_prompt = render_system_prompt(spec)
         else:
             self.system_prompt = render_system_prompt(
-                spec, raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False)
+                spec,
+                raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False),
+                stateless=not state_enabled,
             )
 
         logger.debug(
@@ -152,9 +167,9 @@ class DeepAgent:
         # Initialize checkpointer for session management
         self.checkpointer = MemorySaver()
 
-        # Initialize state store registry if skill_dir provided
+        # Initialize state store registry if skill_dir provided (and the store is enabled)
         self.store_registry: StoreRegistry | None = None
-        if skill_dir:
+        if skill_dir and state_enabled:
             self.store_registry = StoreRegistry(skill_dir)
             logger.info(f"State store registry initialized for skill: {skill_dir}")
 
@@ -184,7 +199,7 @@ class DeepAgent:
             f"Deep Agent initialized: model={model}, "
             f"operation_count={len(operations)}, "
             f"session_timeout={session_timeout_seconds}s, "
-            f"state_store={'enabled' if skill_dir else 'disabled'}"
+            f"state_store={'enabled' if self.store_registry else 'disabled'}"
         )
 
     def start_session_cleanup(self) -> None:
@@ -202,6 +217,21 @@ class DeepAgent:
         the per-API skill dynamically (progressive disclosure) and exposes the
         state tools. Without one, fall back to the legacy stateless agent.
         """
+        if self.skill_dir and not self.state_enabled:
+            # `spec_only`: no store and no state tools; the calculator is kept, as in no_skill.
+            # The thread's checkpointed history is the only memory between calls.
+            agent = create_agent(
+                self.llm,
+                system_prompt=self.system_prompt,
+                tools=[create_calculator_tool()],
+                checkpointer=self.checkpointer,
+            )
+            logger.info(
+                f"Created spec-only agent: raw spec in prompt "
+                f"({len(self.system_prompt)} chars), no store, no skill sources"
+            )
+            return agent
+
         if self.store_registry and self.skill_dir and not self.skill_enabled:
             # `no_skill`: state tools only. No SkillsMiddleware and no filesystem, so nothing of
             # the compiled skill (SKILL.md, schema.json, ...) is reachable; the spec is in the

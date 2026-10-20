@@ -115,6 +115,23 @@ class SimulationBusyError(Exception):
         )
 
 
+class StoreDisabledError(Exception):
+    """Raised by a store operation (seed, state snapshot) on a harness started with no store.
+
+    `spec_only` (HARNESS_ABLATION_STATE=false) has no StoreRegistry: there is nothing to seed or
+    inspect. Mapped to 409 with ``code="no_store"`` so a client can tell it from a failure.
+    """
+
+    code = "no_store"
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message
+            or "This simulation has no store (spec_only: HARNESS_ABLATION_STATE=false); "
+            "there is nothing to seed or inspect."
+        )
+
+
 class SimulationArtifactsNotFoundError(Exception):
     """Raised when start is requested but the skill's baked artifacts are missing/incomplete."""
 
