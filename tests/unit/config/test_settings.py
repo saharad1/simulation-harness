@@ -96,6 +96,26 @@ class TestLLMConfig:
                 temperature=3.0,
             )
 
+    def test_request_timeout_defaults_unset(self) -> None:
+        from simulation_harness.config.models import LLMConfig
+
+        config = LLMConfig(
+            provider="openai", skill_generation_model="gpt-4", simulation_model="gpt-4"
+        )
+        assert config.request_timeout_seconds is None
+        assert config.max_retries is None
+
+    def test_request_timeout_must_be_positive(self) -> None:
+        from simulation_harness.config.models import LLMConfig
+
+        with pytest.raises(ValueError):
+            LLMConfig(
+                provider="openai",
+                skill_generation_model="gpt-4",
+                simulation_model="gpt-4",
+                request_timeout_seconds=0,
+            )
+
 
 class TestHarnessConfig:
     def test_construct_from_minimal_dict(self) -> None:

@@ -51,6 +51,8 @@ def _default_instance_factory(
         skill_dir=skill_dir,
         agent_recursion_limit=config.sessions.agent_recursion_limit,
         mcp_port=mcp_port,
+        request_timeout_seconds=config.llm.request_timeout_seconds,
+        max_retries=config.llm.max_retries,
     )
 
 

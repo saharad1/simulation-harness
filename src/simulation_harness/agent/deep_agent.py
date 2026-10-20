@@ -64,6 +64,8 @@ class DeepAgent:
         skill_dir: Path | None = None,
         skill_name: str | None = None,
         agent_recursion_limit: int = 50,
+        request_timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ):
         """Initialize Deep Agent.
 
@@ -81,6 +83,8 @@ class DeepAgent:
             skill_name: Flat skill name for the agent-visible staging directory. Defaults
                 to ``skill_dir``'s basename with any generation stamp stripped.
             agent_recursion_limit: Maximum recursion depth for agent (default: 10)
+            request_timeout_seconds: Per-request LLM timeout; None keeps the client default
+            max_retries: LLM retries per call; None keeps the client default
         """
         self.spec = spec
         self.operations = operations
@@ -107,6 +111,11 @@ class DeepAgent:
         }
         if base_url is not None:
             llm_kwargs["base_url"] = base_url
+        # Passed only when configured, so an unset value keeps the client's own defaults.
+        if request_timeout_seconds is not None:
+            llm_kwargs["timeout"] = request_timeout_seconds
+        if max_retries is not None:
+            llm_kwargs["max_retries"] = max_retries
 
         self.llm = ChatOpenAI(**llm_kwargs)
 

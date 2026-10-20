@@ -414,4 +414,46 @@ def test_empty_string_base_url_is_forwarded_not_silently_dropped(
         assert call_kwargs["base_url"] == ""
 
 
+def test_request_timeout_and_retries_reach_chat_openai(
+    mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """A configured timeout must bound every simulation LLM call, retries included."""
+    with patch("simulation_harness.agent.deep_agent.ChatOpenAI") as mock_chat:
+        mock_chat.return_value = Mock()
+        DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+            request_timeout_seconds=90,
+            max_retries=2,
+        )
+        call_kwargs = mock_chat.call_args[1]
+        assert call_kwargs["timeout"] == 90
+        assert call_kwargs["max_retries"] == 2
+
+
+def test_unset_request_timeout_keeps_client_defaults(
+    mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """Unset means the client's own defaults — no timeout/max_retries kwargs are passed."""
+    with patch("simulation_harness.agent.deep_agent.ChatOpenAI") as mock_chat:
+        mock_chat.return_value = Mock()
+        DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+        )
+        call_kwargs = mock_chat.call_args[1]
+        assert "timeout" not in call_kwargs
+        assert "max_retries" not in call_kwargs
+
+
 # Made with Bob

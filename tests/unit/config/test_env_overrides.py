@@ -162,6 +162,22 @@ class TestLLMOverrides:
         out = apply_env_overrides(_base())
         assert out.llm.simulation_model == "openai/gpt-4o-mini"
 
+    def test_request_timeout_and_retries_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HARNESS_LLM_REQUEST_TIMEOUT_SECONDS", "90")
+        monkeypatch.setenv("HARNESS_LLM_MAX_RETRIES", "2")
+        out = apply_env_overrides(_base())
+        assert out.llm.request_timeout_seconds == 90.0
+        assert out.llm.max_retries == 2
+
+    def test_non_positive_request_timeout_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HARNESS_LLM_REQUEST_TIMEOUT_SECONDS", "0")
+        with pytest.raises(ValueError):
+            apply_env_overrides(_base())
+
     def test_generation_and_simulation_models_are_independent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

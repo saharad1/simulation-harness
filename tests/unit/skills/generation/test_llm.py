@@ -233,3 +233,67 @@ def test_transient_errors_are_not_fatal(cls: type, status: int) -> None:
 def test_non_api_errors_are_not_fatal() -> None:
     assert is_fatal_llm_error(RuntimeError("connection reset")) is False
     assert is_fatal_llm_error(StructuredCallError("bad json")) is False
+
+
+# ── dropped connections: one flaky call must not cost a whole generation ─────
+
+
+def _dropped() -> openai.APIConnectionError:
+    """The real exception a dropped gateway connection surfaces as — langchain's
+    wrapper subclasses it, so the production path sees this type either way."""
+    return openai.APIConnectionError(
+        request=httpx.Request("POST", "https://gateway.example.com/v1/chat/completions")
+    )
+
+
+@pytest.fixture
+def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the waits instead of sleeping them."""
+    waits: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(llmmod.asyncio, "sleep", fake_sleep)
+    return waits
+
+
+async def test_call_text_retries_a_dropped_connection(_no_backoff: list[float]) -> None:
+    """Observed 2026-10-19: three consecutive tau2-retail regenerations each died on
+    one `APIConnectionError` in the concurrent operations stage, discarding the
+    whole bundle. A retried call succeeds and the generation continues."""
+    fake = MagicMock()
+    fake.ainvoke = AsyncMock(
+        side_effect=[_dropped(), _dropped(), MagicMock(content="hello")]
+    )
+    assert await call_text(fake, "sys", "usr") == "hello"
+    assert fake.ainvoke.await_count == 3
+    assert len(_no_backoff) == 2
+
+
+async def test_call_json_retries_a_dropped_connection(_no_backoff: list[float]) -> None:
+    fake = MagicMock()
+    fake.ainvoke = AsyncMock(side_effect=[_dropped(), MagicMock(content='{"a": 1}')])
+    assert await call_json(fake, "sys", "usr") == {"a": 1}
+
+
+async def test_a_connection_that_never_recovers_still_raises(
+    _no_backoff: list[float],
+) -> None:
+    """Bounded: a gateway that is really down must still fail the stage."""
+    fake = MagicMock()
+    fake.ainvoke = AsyncMock(side_effect=_dropped())
+    with pytest.raises(openai.APIConnectionError):
+        await call_text(fake, "sys", "usr")
+    assert fake.ainvoke.await_count == llmmod.CONNECTION_ATTEMPTS
+
+
+async def test_status_errors_are_not_retried_here(_no_backoff: list[float]) -> None:
+    """A 4xx/5xx is the client's and the per-stage degrade's to handle; retrying a
+    403 here would only delay the settings error `is_fatal_llm_error` surfaces."""
+    fake = MagicMock()
+    fake.ainvoke = AsyncMock(side_effect=_api_error(openai.PermissionDeniedError, 403))
+    with pytest.raises(openai.PermissionDeniedError):
+        await call_text(fake, "sys", "usr")
+    assert fake.ainvoke.await_count == 1
+    assert _no_backoff == []

@@ -78,6 +78,14 @@ _OVERRIDES: Sequence[tuple[str, tuple[str, str], Callable[[str, str], Any]]] = (
     # editing YAML between them would make the runs order-dependent. Validated by the model
     # (0 <= t <= 2), so a typo fails at startup rather than silently sampling.
     ("HARNESS_LLM_TEMPERATURE", ("llm", "temperature"), _parse_float),
+    # Per-call timeout and retries for the simulation LLM. Env-driven so a run against a
+    # stalling gateway can bound its waits without editing the shipped YAML.
+    (
+        "HARNESS_LLM_REQUEST_TIMEOUT_SECONDS",
+        ("llm", "request_timeout_seconds"),
+        _parse_float,
+    ),
+    ("HARNESS_LLM_MAX_RETRIES", ("llm", "max_retries"), _parse_int),
     ("HARNESS_SERVER_HOST", ("server", "host"), _parse_str),
     ("HARNESS_SERVER_PORT", ("server", "port"), _parse_int),
     ("HARNESS_SKILLS_FOLDER", ("skills", "folder"), _parse_str),
@@ -148,6 +156,7 @@ def apply_env_overrides(
       HARNESS_AUTOSTART_ENABLED, HARNESS_AUTOSTART_SIMULATION
       HARNESS_LLM_PROVIDER, HARNESS_LLM_SKILL_GENERATION_MODEL,
       HARNESS_LLM_SIMULATION_MODEL, HARNESS_LLM_TEMPERATURE
+      HARNESS_LLM_REQUEST_TIMEOUT_SECONDS, HARNESS_LLM_MAX_RETRIES
       HARNESS_ABLATION_SKILL, HARNESS_ABLATION_STATE
 
     Raises:

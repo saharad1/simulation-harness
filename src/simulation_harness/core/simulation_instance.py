@@ -41,6 +41,8 @@ class SimulationInstance:
         skill_dir: Path | None = None,
         agent_recursion_limit: int = 50,
         mcp_port: int | None = None,
+        request_timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> None:
         """Initialize simulation instance.
 
@@ -93,6 +95,8 @@ class SimulationInstance:
             # Agent Skills name, and would make the skill's identity move on every regeneration).
             skill_name=spec.name,
             agent_recursion_limit=agent_recursion_limit,
+            request_timeout_seconds=request_timeout_seconds,
+            max_retries=max_retries,
         )
 
         logger.info(

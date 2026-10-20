@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from openai import APIStatusError, LengthFinishReasonError
+from openai import APIConnectionError, APIStatusError, LengthFinishReasonError
 from pydantic import SecretStr
 
 from simulation_harness.config.env_source import harness_env
@@ -83,10 +84,37 @@ def build_chat(
     return ChatOpenAI(**kwargs)
 
 
+#: Attempts per call when the gateway drops the connection, and the wait before each retry.
+#: A generation is ~10 concurrent calls with no checkpoint, so one dropped connection used to
+#: discard the whole bundle: on 2026-10-19 three consecutive tau2-retail regenerations each died
+#: on a single `APIConnectionError` in the operations stage, after everything before it had
+#: succeeded. The OpenAI client's own 2 retries are immediate and did not ride out the outage.
+CONNECTION_ATTEMPTS = 4
+_CONNECTION_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
+
+
+async def _ainvoke(llm: ChatOpenAI, messages: list) -> Any:
+    """``llm.ainvoke`` that retries a dropped connection (or a client timeout, which the
+    OpenAI SDK raises as a subclass of it) with backoff.
+
+    Only connection failures are retried. A status error is a reply — the client already
+    retries the transient ones, and a 401/403/404 must surface at once (see
+    :func:`is_fatal_llm_error`). Each stage's own timeout still bounds the total wait.
+    """
+    for attempt in range(CONNECTION_ATTEMPTS):
+        try:
+            return await llm.ainvoke(messages)
+        except APIConnectionError:
+            if attempt == CONNECTION_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(_CONNECTION_BACKOFF_SECONDS[attempt])
+    raise AssertionError("unreachable")  # the loop returns or raises
+
+
 async def call_json(llm: ChatOpenAI, system: str, user: str) -> dict | list:
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
     try:
-        response = await llm.ainvoke(messages)
+        response = await _ainvoke(llm, messages)
     except LengthFinishReasonError as e:
         raise StructuredCallError(_TRUNCATED_MSG) from e
     content = str(response.content)
@@ -99,7 +127,7 @@ async def call_json(llm: ChatOpenAI, system: str, user: str) -> dict | list:
 async def call_text(llm: ChatOpenAI, system: str, user: str) -> str:
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
     try:
-        response = await llm.ainvoke(messages)
+        response = await _ainvoke(llm, messages)
     except LengthFinishReasonError as e:
         raise StructuredCallError(_TRUNCATED_MSG) from e
     return str(response.content)

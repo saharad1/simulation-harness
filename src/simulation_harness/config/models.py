@@ -30,6 +30,18 @@ class LLMConfig(BaseModel):
     max_tokens: Optional[int] = Field(
         None, gt=0, description="Maximum tokens per request"
     )
+    # Bounds each simulation-runtime LLM call. Unset keeps the OpenAI client's own default,
+    # a 600 s read timeout: an LLM gateway that accepts a request and never answers then holds
+    # one tools/call for ten minutes per attempt (observed 2026-10-18, when healthy calls took
+    # a median 2.4 s and p99 14.5 s).
+    request_timeout_seconds: Optional[float] = Field(
+        None, gt=0, description="Per-request timeout for simulation LLM calls (seconds)"
+    )
+    max_retries: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Retries per simulation LLM call after a timeout or error",
+    )
 
 
 class SkillsConfig(BaseModel):
