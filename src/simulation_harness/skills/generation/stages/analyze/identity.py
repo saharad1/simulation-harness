@@ -355,12 +355,15 @@ def _nested_objects(prop: dict) -> Iterator[dict]:
 
 
 def _container_element(prop: dict) -> tuple[str, dict] | None:
-    """``(container, element schema)`` for an array or map property, else ``None``.
+    """``(container, element schema)`` for an array, map or plain object, else ``None``.
 
     A map is an object whose ``additionalProperties`` is itself a schema — the
     shape ``_nested_objects`` already walks for promotion. A plain nested object
-    with declared ``properties`` is neither: it is one value, not a collection of
-    them, so it is left out of scope here.
+    with declared ``properties`` is one value, not a collection, but its fields are
+    declared all the same, so it is captured as an ``object`` container and pinned
+    like an embedded element. Leaving it out reached the runtime schema as an empty
+    object: tau2-retail's ``User.name`` lost ``first_name``/``last_name``, and the
+    simulator guessed ``name.first`` and found nobody.
     """
     if prop.get("type") == "array":
         items = prop.get("items")
@@ -368,6 +371,8 @@ def _container_element(prop: dict) -> tuple[str, dict] | None:
     extra = prop.get("additionalProperties")
     if prop.get("type") == "object" and isinstance(extra, dict) and extra:
         return ("map", extra)
+    if isinstance(prop.get("properties"), dict) and prop["properties"]:
+        return ("object", prop)
     return None
 
 
@@ -579,6 +584,12 @@ def _element_shape(
     fields = _element_fields(element)
     embedded = ElementShape(kind="embedded", container=container, fields=fields)
     nested = identity_key(prop_name, element, synthetic=synthetic, nested=True)
+    if container == "object":
+        # One inline value. An object with an identity of its own was promoted to an
+        # entity by derive_identity, and describing it inline as well would claim the
+        # parent stores what the promotion moved out — so only identity-less objects
+        # are pinned, and no reference/foreign-key annotation applies to a single value.
+        return embedded if nested is None or nested == parent.primary_key else None
     if nested is None or nested == parent.primary_key:
         fk = _foreign_key(element, clusters, parent=parent)
         if fk is None:

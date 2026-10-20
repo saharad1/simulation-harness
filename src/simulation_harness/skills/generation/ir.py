@@ -81,7 +81,10 @@ class ElementShape(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     kind: Literal["scalar", "embedded", "reference"]
-    container: Literal["array", "map"] = "array"
+    # ``object`` is a plain nested object — one value, not a collection — whose
+    # declared properties are pinned the same way an embedded element's are. It is
+    # always ``embedded``: an object with its own identity is promoted instead.
+    container: Literal["array", "map", "object"] = "array"
     type: str | None = None
     fields: tuple[ElementField, ...] = ()
     target_collection: str | None = None

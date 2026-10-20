@@ -192,6 +192,37 @@ _CONTAINER_KEYWORD = {
 }
 
 
+def _is_object_prop(prop: dict) -> bool:
+    """Declared an object, directly or via the ``allOf: [{$ref}]`` wrapper the schema
+    prompt emits for an open object (``GenericObject``)."""
+    if prop.get("type") == "object":
+        return True
+    wrapped = prop.get("allOf")
+    return (
+        "type" not in prop
+        and isinstance(wrapped, list)
+        and len(wrapped) == 1
+        and isinstance(wrapped[0], dict)
+        and set(wrapped[0]) == {"$ref"}
+    )
+
+
+def _stamp_object_fields(props: dict, name: str, shape: ElementShape) -> None:
+    """Write a plain nested object's declared fields onto its property in place.
+
+    The schema prompt is given the field as type ``object`` with no fields, so it
+    writes an open object — and the runtime, reading only the schema, then guesses
+    the inner names. Replaces the open-object reference but keeps the description.
+    A property not declared as an object is left for ``validate_schema`` to report.
+    """
+    prop = props.get(name)
+    if not isinstance(prop, dict) or not _is_object_prop(prop):
+        return
+    subschema = _object_element(shape.fields)
+    prop.pop("allOf", None)
+    prop.update(subschema)
+
+
 def _stamp_element_shapes(entity_def: dict, entity: Entity) -> None:
     """Write each derived element shape onto its container property.
 
@@ -205,6 +236,9 @@ def _stamp_element_shapes(entity_def: dict, entity: Entity) -> None:
         return
     for field in entity.fields:
         if field.element is None:
+            continue
+        if field.element.container == "object":
+            _stamp_object_fields(props, field.name, field.element)
             continue
         keyword_type = _CONTAINER_KEYWORD.get(field.element.container)
         if keyword_type is None:

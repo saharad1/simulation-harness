@@ -429,22 +429,87 @@ def test_map_of_promoted_elements_stays_embedded_with_a_cross_reference() -> Non
     assert shape.link_fields == ()
 
 
-def test_a_plain_nested_object_is_not_a_container() -> None:
-    """An address is one value, not a collection of them, so it is out of scope and
-    keeps whatever the schema prompt wrote."""
+def test_a_plain_nested_object_has_its_fields_pinned() -> None:
+    """An address is one value, not a collection, but its fields are still declared.
+
+    Leaving it out reached the runtime as an empty `GenericObject`: tau2-retail's
+    `User.name` lost `first_name`/`last_name`, the simulator guessed `name.first`,
+    matched nobody, and told the agent 48 of 104 users did not exist (2026-10-18).
+    """
     schemas: dict[str, dict] = {
         "Order": {
             "properties": {
                 "order_id": {"type": "string"},
                 "address": {
                     "type": "object",
-                    "properties": {"city": {"type": "string"}},
+                    "properties": {
+                        "city": {"type": "string"},
+                        "zip": {"type": "string"},
+                    },
+                    "required": ["zip"],
                 },
             }
         }
     }
     ident = derive_identity(schemas, synthetic=True)
-    assert "address" not in _shapes(ident.entities, "Order")
+    shape = _shapes(ident.entities, "Order")["address"]
+    assert shape.kind == "embedded"
+    assert shape.container == "object"
+    assert {(f.name, f.required) for f in shape.fields} == {
+        ("city", False),
+        ("zip", True),
+    }
+
+
+def test_an_object_without_declared_properties_stays_undecided() -> None:
+    """`{"type": "object"}` declares nothing, so nothing is pinned — as for `items: {}`."""
+    schemas: dict[str, dict] = {
+        "Order": {
+            "properties": {
+                "order_id": {"type": "string"},
+                "metadata": {"type": "object"},
+            }
+        }
+    }
+    ident = derive_identity(schemas, synthetic=True)
+    assert "metadata" not in _shapes(ident.entities, "Order")
+
+
+def test_a_map_is_still_a_map_not_a_plain_object() -> None:
+    """`additionalProperties` with a schema is a keyed collection; it must keep the
+    map shape rather than being read as one object with no fields."""
+    schemas: dict[str, dict] = {
+        "User": {
+            "properties": {
+                "user_id": {"type": "string"},
+                "prefs": {"type": "object", "additionalProperties": {"type": "string"}},
+            }
+        }
+    }
+    ident = derive_identity(schemas, synthetic=True)
+    shape = _shapes(ident.entities, "User")["prefs"]
+    assert shape.container == "map"
+
+
+def test_a_nested_object_with_its_own_identity_is_not_pinned_inline() -> None:
+    """An object carrying its own `*_id` is promoted to an entity by the identity
+    pass; describing it as an inline object too would contradict that."""
+    schemas: dict[str, dict] = {
+        "Order": {
+            "properties": {
+                "order_id": {"type": "string"},
+                "customer": {
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {"type": "string"},
+                        "name": {"type": "string"},
+                    },
+                },
+            }
+        }
+    }
+    ident = derive_identity(schemas, synthetic=True)
+    assert "customer" not in _shapes(ident.entities, "Order")
 
 
 def test_element_required_is_captured() -> None:

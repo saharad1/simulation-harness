@@ -280,6 +280,72 @@ def test_extra_element_fields_are_still_allowed() -> None:
     assert validate_schema_and_db(stamped, db) == []
 
 
+def _object_schema(prop: dict) -> dict:
+    schema = _schema("address")
+    schema["$defs"]["Order"]["properties"]["address"] = prop
+    return schema
+
+
+def _address_shape() -> ElementShape:
+    return ElementShape(
+        kind="embedded",
+        container="object",
+        fields=(
+            ElementField(name="city", type="string"),
+            ElementField(name="zip", type="string", required=True),
+        ),
+    )
+
+
+def test_plain_object_fields_are_stamped_onto_the_property() -> None:
+    """The case this exists for: the schema prompt wrote tau2-retail's `User.name` as
+    an empty `GenericObject`, so the runtime never learned `first_name`."""
+    schema = _object_schema({"type": "object"})
+    out = enforce_contract(schema, _ir(_address_shape(), "address"))
+    prop = _order_prop(out, "address")
+    assert prop["properties"] == {"city": {"type": "string"}, "zip": {"type": "string"}}
+    assert prop["required"] == ["zip"]
+    assert "items" not in prop and "additionalProperties" not in prop
+
+
+def test_plain_object_written_as_a_ref_is_replaced_by_its_fields() -> None:
+    """The shape actually emitted: `allOf: [{$ref: GenericObject}]` plus a description.
+    The description is kept; the empty reference is replaced."""
+    schema = _object_schema(
+        {
+            "allOf": [{"$ref": "#/$defs/GenericObject"}],
+            "description": "Shipping address",
+        }
+    )
+    schema["$defs"]["GenericObject"] = {"type": "object"}
+    out = enforce_contract(schema, _ir(_address_shape(), "address"))
+    prop = _order_prop(out, "address")
+    assert prop["type"] == "object"
+    assert set(prop["properties"]) == {"city", "zip"}
+    assert prop["description"] == "Shipping address"
+    assert "allOf" not in prop
+
+
+def test_stamped_object_makes_the_seed_gate_reject_a_wrong_shape() -> None:
+    """Pinned fields turn `validate_schema_and_db` into a shape check on the object."""
+    schema = _object_schema({"type": "object"})
+    stamped = enforce_contract(schema, _ir(_address_shape(), "address"))
+    good = {"orders": [{"order_id": "o1", "address": {"city": "X", "zip": "1"}}]}
+    renamed = {
+        "orders": [{"order_id": "o1", "address": {"city": "X", "postcode": "1"}}]
+    }
+    assert validate_schema_and_db(stamped, good) == []
+    errors = validate_schema_and_db(stamped, renamed)
+    assert errors and "'zip' is a required property" in errors[0]
+
+
+def test_a_non_object_property_is_not_stamped_with_object_fields() -> None:
+    """Declared type must match; a wrong type is `validate_schema`'s to report."""
+    schema = _object_schema({"type": "string"})
+    out = enforce_contract(schema, _ir(_address_shape(), "address"))
+    assert _order_prop(out, "address") == {"type": "string"}
+
+
 def test_element_ref_records_the_local_field_when_it_differs() -> None:
     """An inlined element whose own key name differs from the target's pk."""
     shape = ElementShape(
