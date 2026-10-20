@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import hashlib
+from collections.abc import Awaitable, Callable
+from typing import Any
 from dataclasses import dataclass, field
 
 from pydantic import SecretStr
 
 from simulation_harness.config.models import GenerationConfig
 from simulation_harness.openapi.parser import OpenAPISpec
+from simulation_harness.skills.generation.ir import Scenario, SpecModel
 from simulation_harness.skills.generation.llm import StructuredCallError, build_chat
 from simulation_harness.skills.generation.repair import (
     GenerationStageError,
@@ -29,6 +32,7 @@ from simulation_harness.skills.generation.stages.operations import (
 )
 from simulation_harness.skills.generation.stages.schema import generate_schema
 from simulation_harness.skills.generation.stages.scenarios import generate_scenarios
+from simulation_harness.skills.generation.stage_cache import StageCache
 from simulation_harness.skills.generation.stages.seed import generate_seed
 from simulation_harness.utils.logging import get_logger
 
@@ -58,9 +62,33 @@ async def run_pipeline(
     gen_config: GenerationConfig,
     model: str,
     progress_cb: Callable[[str], None] | None = None,
+    cache: StageCache | None = None,
 ) -> SkillBundle:
+    """Run every generation stage and assemble the bundle.
+
+    With ``cache``, each stage's validated output is stored as it finishes and reused on a
+    rerun, so a failed generation resumes from its last finished stage. A stage that degraded
+    to a fallback (behavior, scenarios) raised before ``cached`` stored anything, so it is
+    retried next time rather than frozen as the fallback.
+    """
     cb = progress_cb or _noop
     timeout = gen_config.stage_timeout_seconds
+
+    async def cached(
+        name: str,
+        produce: Callable[[], Awaitable[Any]],
+        dump: Callable[[Any], Any] = lambda v: v,
+        load: Callable[[Any], Any] = lambda v: v,
+    ) -> Any:
+        if cache is not None:
+            hit = cache.get(name)
+            if hit is not None:
+                logger.info("stage %s: reused from cache", name)
+                return load(hit)
+        value = await produce()
+        if cache is not None:
+            cache.put(name, dump(value))
+        return value
 
     def chat(params, json_mode):
         return build_chat(
@@ -74,17 +102,22 @@ async def run_pipeline(
         )
 
     # Stage 1 — analyze (extract → classify fan-out → merge; per-call timeouts inside)
-    ir = await analyze(
-        spec_dict,
-        slug,
-        extract_llm=chat(gen_config.extract, True),
-        classify_llm=chat(gen_config.classify, True),
-        enrich_llm=chat(gen_config.enrich, True),
-        retries=gen_config.repair_retries,
-        batch_cap=gen_config.classify_batch_size,
-        concurrency=gen_config.concurrency,
-        timeout=timeout,
-        progress_cb=cb,
+    ir = await cached(
+        "analyze",
+        lambda: analyze(
+            spec_dict,
+            slug,
+            extract_llm=chat(gen_config.extract, True),
+            classify_llm=chat(gen_config.classify, True),
+            enrich_llm=chat(gen_config.enrich, True),
+            retries=gen_config.repair_retries,
+            batch_cap=gen_config.classify_batch_size,
+            concurrency=gen_config.concurrency,
+            timeout=timeout,
+            progress_cb=cb,
+        ),
+        dump=lambda v: v.model_dump(mode="json"),
+        load=SpecModel.model_validate,
     )
 
     spec = OpenAPISpec(spec_dict)
@@ -96,17 +129,23 @@ async def run_pipeline(
 
     async def one_section(chunk):
         nonlocal done
+        # Keyed by the chunk's operations, so a re-chunked spec never reuses a section.
+        ops = "\n".join(op.operation_id for op in chunk)
+        name = f"section-{hashlib.sha256(ops.encode('utf-8')).hexdigest()[:12]}"
         async with sem:
-            section = await guard_timeout(
-                generate_section(
-                    spec,
-                    ir,
-                    chunk,
-                    chat(gen_config.operation, False),
-                    retries=gen_config.repair_retries,
+            section = await cached(
+                name,
+                lambda: guard_timeout(
+                    generate_section(
+                        spec,
+                        ir,
+                        chunk,
+                        chat(gen_config.operation, False),
+                        retries=gen_config.repair_retries,
+                    ),
+                    stage="operations",
+                    timeout=timeout,
                 ),
-                stage="operations",
-                timeout=timeout,
             )
         async with lock:
             done += 1
@@ -115,14 +154,17 @@ async def run_pipeline(
 
     async def schema_task():
         cb("designing_schema")
-        return await guard_timeout(
-            generate_schema(
-                ir,
-                chat(gen_config.schema_seed, True),
-                retries=gen_config.repair_retries,
+        return await cached(
+            "schema",
+            lambda: guard_timeout(
+                generate_schema(
+                    ir,
+                    chat(gen_config.schema_seed, True),
+                    retries=gen_config.repair_retries,
+                ),
+                stage="schema",
+                timeout=timeout,
             ),
-            stage="schema",
-            timeout=timeout,
         )
 
     async def scenarios_task():
@@ -130,15 +172,20 @@ async def run_pipeline(
             return []
         cb("imagining_scenarios")
         try:
-            return await guard_timeout(
-                generate_scenarios(
-                    ir,
-                    chat(gen_config.scenarios, True),
-                    count=gen_config.scenarios_count,
-                    retries=gen_config.repair_retries,
+            return await cached(
+                "scenarios",
+                lambda: guard_timeout(
+                    generate_scenarios(
+                        ir,
+                        chat(gen_config.scenarios, True),
+                        count=gen_config.scenarios_count,
+                        retries=gen_config.repair_retries,
+                    ),
+                    stage="scenarios",
+                    timeout=timeout,
                 ),
-                stage="scenarios",
-                timeout=timeout,
+                dump=lambda v: [s.model_dump(mode="json") for s in v],
+                load=lambda v: [Scenario.model_validate(d) for d in v],
             )
         except (GenerationStageError, StructuredCallError, StageTimeoutError) as e:
             logger.warning(
@@ -156,14 +203,17 @@ async def run_pipeline(
             return ""
         cb("describing_behavior")
         try:
-            return await guard_timeout(
-                generate_behavior(
-                    ir,
-                    chat(gen_config.behavior, False),
-                    retries=gen_config.repair_retries,
+            return await cached(
+                "behavior",
+                lambda: guard_timeout(
+                    generate_behavior(
+                        ir,
+                        chat(gen_config.behavior, False),
+                        retries=gen_config.repair_retries,
+                    ),
+                    stage="behavior",
+                    timeout=timeout,
                 ),
-                stage="behavior",
-                timeout=timeout,
             )
         except (GenerationStageError, StructuredCallError, StageTimeoutError) as e:
             logger.warning(
@@ -186,16 +236,19 @@ async def run_pipeline(
     # Stage: seed (depends on schema + scenarios)
     scenario_dicts = [s.model_dump() for s in scenarios]
     cb("seeding_database")
-    db = await guard_timeout(
-        generate_seed(
-            ir,
-            schema,
-            scenario_dicts,
-            chat(gen_config.schema_seed, True),
-            retries=gen_config.repair_retries,
+    db = await cached(
+        "seed",
+        lambda: guard_timeout(
+            generate_seed(
+                ir,
+                schema,
+                scenario_dicts,
+                chat(gen_config.schema_seed, True),
+                retries=gen_config.repair_retries,
+            ),
+            stage="seed",
+            timeout=timeout,
         ),
-        stage="seed",
-        timeout=timeout,
     )
 
     # Stage: assemble + final validation

@@ -362,3 +362,91 @@ async def test_run_pipeline_passes_request_timeout_to_every_client() -> None:
             model="m",
         )
     assert calls and all(c.get("timeout") == 77 for c in calls), calls
+
+
+# ── stage cache: a failed generation resumes from its finished stages ────────
+
+
+def _stage_mocks(seed: Any, behavior: Any) -> dict[str, AsyncMock]:
+    from simulation_harness.skills.generation.ir import Scenario
+
+    return {
+        "analyze": AsyncMock(return_value=_ir()),
+        "generate_schema": AsyncMock(return_value=SCHEMA),
+        "generate_scenarios": AsyncMock(
+            return_value=[Scenario(title="t", intent="i", operations=["getFeature"])]
+        ),
+        "generate_behavior": AsyncMock(side_effect=behavior),
+        "generate_seed": AsyncMock(side_effect=seed),
+        "generate_section": AsyncMock(return_value="### /features/{id} GET\nok"),
+    }
+
+
+async def _run(mocks: dict[str, AsyncMock], cache: Any) -> Any:
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for name, mock in mocks.items():
+            stack.enter_context(patch.object(P, name, mock))
+        stack.enter_context(patch.object(P, "build_chat"))
+        return await P.run_pipeline(
+            SPEC,
+            "aha",
+            api_key=None,
+            base_url=None,
+            gen_config=GenerationConfig(),
+            model="m",
+            cache=cache,
+        )
+
+
+async def test_rerun_after_seed_failure_reuses_finished_stages(tmp_path: Any) -> None:
+    from simulation_harness.skills.generation.stage_cache import StageCache
+
+    cache = StageCache(tmp_path / "c")
+    db = {"features": [{"id": "f1"}]}
+    mocks = _stage_mocks(
+        seed=[GenerationStageError("seed", ["boom"]), db],
+        behavior=["### Derivation Rules\n- x", "### Derivation Rules\n- x"],
+    )
+    with pytest.raises(GenerationStageError):
+        await _run(mocks, cache)
+    bundle = await _run(mocks, cache)
+
+    assert bundle.db == db
+    assert "### Derivation Rules" in bundle.skill_md
+    assert bundle.scenarios == [
+        {"title": "t", "intent": "i", "operations": ["getFeature"]}
+    ]
+    for name in (
+        "analyze",
+        "generate_schema",
+        "generate_scenarios",
+        "generate_behavior",
+        "generate_section",
+    ):
+        assert mocks[name].await_count == 1, name
+    assert mocks["generate_seed"].await_count == 2
+
+
+async def test_degraded_behavior_is_not_cached(tmp_path: Any) -> None:
+    """A stage that fell back to its default must be retried, not frozen as the fallback."""
+    from simulation_harness.skills.generation.repair import StageTimeoutError
+    from simulation_harness.skills.generation.stage_cache import StageCache
+
+    cache = StageCache(tmp_path / "c")
+    mocks = _stage_mocks(
+        seed=[GenerationStageError("seed", ["boom"]), {"features": [{"id": "f1"}]}],
+        behavior=[StageTimeoutError("behavior", 1), "### Derivation Rules\n- y"],
+    )
+    with pytest.raises(GenerationStageError):
+        await _run(mocks, cache)
+    bundle = await _run(mocks, cache)
+    assert mocks["generate_behavior"].await_count == 2
+    assert "- y" in bundle.skill_md
+
+
+async def test_no_cache_means_no_files(tmp_path: Any) -> None:
+    mocks = _stage_mocks(seed=[{"features": [{"id": "f1"}]}], behavior=[""])
+    await _run(mocks, None)
+    assert list(tmp_path.iterdir()) == []
