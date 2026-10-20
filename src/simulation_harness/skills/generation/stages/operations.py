@@ -162,6 +162,9 @@ _ABSENT = re.compile(
     r"|do not (?:include|contain|have))\b"
 )
 _TICKED = re.compile(r"`([A-Za-z_][\w.\[\]]*)`")
+#: "missing" with no object ("`x` is missing, malformed, or ..."): the subject itself is
+#: absent, so nothing after it is a demanded field.
+_NO_OBJECT = re.compile(r"(?i)^\s*(?:[,;:.]|(?:or|and)\b|$)")
 
 
 def _leaf(name: str) -> str:
@@ -196,6 +199,8 @@ def undefined_input_requirements(
             if not match:
                 continue
             subject, demanded = line[: match.start()], line[match.end() :]
+            if _NO_OBJECT.match(demanded):
+                continue
             if not any(_leaf(n) in allowed for n in _TICKED.findall(subject)):
                 continue
             extra = sorted({_leaf(n) for n in _TICKED.findall(demanded)} - allowed)

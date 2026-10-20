@@ -500,6 +500,10 @@ def test_rule_demanding_a_field_the_request_cannot_carry_is_rejected() -> None:
         "  - When the stored stay is missing `rate`:",
         # no absence wording at all
         "  - When `stay_id` does not exist in `stays`:",
+        # "missing" with no object: the request field itself is absent, and the rest of
+        # the line is a further condition naming a store (tau2-retail thin tier, 2026-10-20)
+        "  - When `stay_id` is missing, malformed, or does not identify any record in `stays`:",
+        "  - When `stay_id` is missing or does not match a record in `stays`:",
     ],
 )
 def test_legitimate_error_rules_are_untouched(line: str) -> None:
