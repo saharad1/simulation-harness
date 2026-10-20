@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 from dataclasses import dataclass, field
@@ -83,8 +84,19 @@ async def run_pipeline(
         if cache is not None:
             hit = cache.get(name)
             if hit is not None:
-                logger.info("stage %s: reused from cache", name)
-                return load(hit)
+                # A value that parses but no longer validates (an IR model changed since it
+                # was written) is a miss: raising would fail every retry identically.
+                try:
+                    value = load(hit)
+                except (TypeError, ValueError) as e:
+                    logger.warning(
+                        "stage %s: cached value unusable (%s) — regenerating", name, e
+                    )
+                else:
+                    # WARNING, not INFO: a resumed stage is not regenerated, and someone
+                    # iterating on a failing generation needs to see that.
+                    logger.warning("stage %s: reused from cache %s", name, cache.root)
+                    return value
         value = await produce()
         if cache is not None:
             cache.put(name, dump(value))
@@ -98,7 +110,8 @@ async def run_pipeline(
             max_tokens=params.max_tokens,
             base_url=base_url,
             json_mode=json_mode,
-            timeout=gen_config.request_timeout_seconds,
+            timeout=params.request_timeout_seconds
+            or gen_config.request_timeout_seconds,
         )
 
     # Stage 1 — analyze (extract → classify fan-out → merge; per-call timeouts inside)
@@ -236,8 +249,11 @@ async def run_pipeline(
     # Stage: seed (depends on schema + scenarios)
     scenario_dicts = [s.model_dump() for s in scenarios]
     cb("seeding_database")
+    # Keyed by its inputs: scenarios that degraded on one attempt and succeed on the next
+    # must not be paired with a db seeded against none.
+    seed_inputs = json.dumps([schema, scenario_dicts], sort_keys=True)
     db = await cached(
-        "seed",
+        f"seed-{hashlib.sha256(seed_inputs.encode('utf-8')).hexdigest()[:12]}",
         lambda: guard_timeout(
             generate_seed(
                 ir,

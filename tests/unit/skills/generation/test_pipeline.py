@@ -450,3 +450,39 @@ async def test_no_cache_means_no_files(tmp_path: Any) -> None:
     mocks = _stage_mocks(seed=[{"features": [{"id": "f1"}]}], behavior=[""])
     await _run(mocks, None)
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_unloadable_cached_value_is_a_miss(tmp_path: Any) -> None:
+    """A cache file that parses but no longer validates (e.g. after an IR change) is
+    regenerated, not raised — else every retry fails identically."""
+    from simulation_harness.skills.generation.stage_cache import StageCache
+
+    cache = StageCache(tmp_path / "c")
+    cache.put("analyze", {"not": "a SpecModel"})
+    mocks = _stage_mocks(seed=[{"features": [{"id": "f1"}]}], behavior=[""])
+    bundle = await _run(mocks, cache)
+    assert mocks["analyze"].await_count == 1
+    assert bundle.db == {"features": [{"id": "f1"}]}
+
+
+async def test_seed_is_reseeded_when_its_scenarios_change(tmp_path: Any) -> None:
+    """Seed is keyed by its inputs: scenarios that degraded on attempt 1 and succeed on
+    attempt 2 must not be paired with a db seeded against no scenarios."""
+    from simulation_harness.skills.generation.ir import Scenario
+    from simulation_harness.skills.generation.repair import StageTimeoutError
+    from simulation_harness.skills.generation.stage_cache import StageCache
+
+    cache = StageCache(tmp_path / "c")
+    db = {"features": [{"id": "f1"}]}
+    mocks = _stage_mocks(seed=[db, db], behavior=["", ""])
+    mocks["generate_scenarios"] = AsyncMock(
+        side_effect=[
+            StageTimeoutError("scenarios", 1),
+            [Scenario(title="t", intent="i", operations=["getFeature"])],
+        ]
+    )
+    with patch.object(P, "validate_bundle", side_effect=[["boom"], []]):
+        with pytest.raises(GenerationStageError):
+            await _run(mocks, cache)
+        await _run(mocks, cache)
+    assert mocks["generate_seed"].await_count == 2

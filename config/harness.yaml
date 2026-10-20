@@ -31,7 +31,9 @@ sessions:
   agent_recursion_limit: 50
 
 creation:
-  # Must exceed the generation's own stage limits below, or this outer budget fires first.
+  # Outer budget for an API-created simulation (setup_cli has none). It is NOT a sum of the
+  # stage limits below: a stalled generation can run longer and is then cut here, keeping its
+  # stage cache, so a retry resumes. Sized for a normal generation plus a stalled stage.
   max_duration_seconds: 3600
 
 generation:
@@ -40,12 +42,12 @@ generation:
   classify_batch_size: 40
   repair_retries: 2
   # A hung gateway request is cut after request_timeout_seconds and retried (llm._ainvoke:
-  # 4 attempts, backoff 5/15/30 s). The stage limit must cover that whole budget —
-  # 4 x 300 + 50 = 1250 <= 1500 — or a stage dies before its retries run. Measured
-  # 2026-10-20: one 145 KB request took 992 s, the same request a minute later 8 s; the
-  # longest healthy reply (20 000 tokens) took 249 s.
+  # 4 attempts, backoff 5/15/30 s; the SDK's own retries are off). The stage limit must cover
+  # the largest stage's whole budget — 4 x 600 + 50 = 2450 <= 2500 (extract, schema_seed
+  # below) — or a stage dies before its retries run. Measured 2026-10-20: one 145 KB request
+  # took 992 s, the same request a minute later 8 s; a healthy 20 000-token reply, 249 s.
   request_timeout_seconds: 300
-  stage_timeout_seconds: 1500
+  stage_timeout_seconds: 2500
 
   # Per-stage LLM tuning, in pipeline execution order. Stage 1 (extract →
   # enrich → classify) runs first; stages 2-6 then run concurrently in a
@@ -54,7 +56,7 @@ generation:
 
   # Stage 1a — extract: spec → intermediate representation (entities, fields,
   # relationships) that every later stage reads.
-  extract: { temperature: 0.0, max_tokens: 20000 }
+  extract: { temperature: 0.0, max_tokens: 20000, request_timeout_seconds: 600 }
   # Stage 1a-2 — enrich: fill in field detail (descriptions, enums) for an
   # entity list whose names, collections, and primary keys are already pinned
   # in code, so prose can jitter between runs without moving the contract.
@@ -67,7 +69,7 @@ generation:
   operation: { temperature: 0.0, max_tokens: 10000 }
   # Stages 4 & 7 — schema_seed: design schema.json from the IR, then populate
   # db.json from that schema plus the scenarios. Both calls share these params.
-  schema_seed: { temperature: 0.0, max_tokens: 20000 }
+  schema_seed: { temperature: 0.0, max_tokens: 20000, request_timeout_seconds: 600 }
   # Stage 6 — behavior: a global set of numeric ranges and derivation rules
   # injected into the SKILL.md preamble.
   behavior: { temperature: 0.0, max_tokens: 3000 }

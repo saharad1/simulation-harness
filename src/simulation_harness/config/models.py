@@ -122,6 +122,13 @@ class StageParams(BaseModel):
 
     temperature: float = Field(0.0, ge=0, le=2)
     max_tokens: int = Field(8000, gt=0)
+    # Overrides GenerationConfig.request_timeout_seconds for this stage's client. The
+    # large-output stages need more: a healthy 20 000-token reply took 249 s (2026-10-20).
+    request_timeout_seconds: float | None = Field(
+        None,
+        gt=0,
+        description="Per-request timeout for this stage's LLM calls (seconds)",
+    )
 
 
 class GenerationConfig(BaseModel):

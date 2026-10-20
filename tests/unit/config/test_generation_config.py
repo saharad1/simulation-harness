@@ -92,8 +92,8 @@ def test_request_timeout_defaults_unset_and_must_be_positive() -> None:
 
 
 def test_shipped_stage_timeout_covers_one_requests_retry_budget() -> None:
-    """A stage limit shorter than one request's retries would kill the stage before
-    its retries run — the defect that made 2026-10-20's regenerations all-or-nothing."""
+    """A stage limit shorter than one request's retries would kill the stage before its
+    retries run. Checked per stage, against the timeout that stage's client actually gets."""
     from simulation_harness.skills.generation.llm import (
         _CONNECTION_BACKOFF_SECONDS,
         CONNECTION_ATTEMPTS,
@@ -101,12 +101,29 @@ def test_shipped_stage_timeout_covers_one_requests_retry_budget() -> None:
 
     repo_root = Path(__file__).resolve().parents[3]
     data = yaml.safe_load((repo_root / "config" / "harness.yaml").read_text())
-    cfg = HarnessConfig(**data)
-    gen = cfg.generation
+    gen = HarnessConfig(**data).generation
     assert gen.request_timeout_seconds == 300
-    assert gen.stage_timeout_seconds == 1500
-    assert cfg.creation.max_duration_seconds == 3600
-    budget = CONNECTION_ATTEMPTS * gen.request_timeout_seconds + sum(
-        _CONNECTION_BACKOFF_SECONDS
-    )
-    assert budget <= gen.stage_timeout_seconds
+    # The large-output stages get a longer ceiling: a healthy 20 000-token reply took 249 s.
+    assert gen.extract.request_timeout_seconds == 600
+    assert gen.schema_seed.request_timeout_seconds == 600
+    stages = [
+        gen.extract,
+        gen.enrich,
+        gen.classify,
+        gen.schema_seed,
+        gen.operation,
+        gen.scenarios,
+        gen.behavior,
+    ]
+    for stage in stages:
+        effective = stage.request_timeout_seconds or gen.request_timeout_seconds
+        budget = CONNECTION_ATTEMPTS * effective + sum(_CONNECTION_BACKOFF_SECONDS)
+        assert budget <= gen.stage_timeout_seconds, (stage, budget)
+
+
+def test_stage_request_timeout_defaults_unset() -> None:
+    from simulation_harness.config.models import StageParams
+
+    assert StageParams().request_timeout_seconds is None
+    with pytest.raises(ValueError):
+        StageParams(request_timeout_seconds=0)

@@ -10,6 +10,7 @@ from pydantic import SecretStr
 from simulation_harness.skills import generator as G
 from simulation_harness.skills.generator import SkillGenerator
 from simulation_harness.skills.generation.pipeline import SkillBundle
+from simulation_harness.skills.generation.repair import StageTimeoutError
 from typing import Any
 
 SPEC = {
@@ -319,7 +320,7 @@ class TestScenariosJSON:
 
 
 class TestStageCacheLifecycle:
-    """generate_skill keeps a failed generation's stage cache and clears a published one."""
+    """generate_skill keeps a stalled generation's stage cache and clears a published one."""
 
     @staticmethod
     def _cache_dirs(root: Path) -> list[Path]:
@@ -329,7 +330,7 @@ class TestStageCacheLifecycle:
     async def test_failed_generation_keeps_its_cache_dir(self, tmp_path: Path) -> None:
         async def fails_after_analyze(spec: Any, slug: Any, **kwargs: Any) -> Any:
             kwargs["cache"].put("analyze", {"done": True})
-            raise RuntimeError("schema stalled")
+            raise StageTimeoutError("schema", 1)
 
         gen = SkillGenerator(api_key=SecretStr("k"))
         with patch.object(G, "run_pipeline", fails_after_analyze):
@@ -348,7 +349,7 @@ class TestStageCacheLifecycle:
 
         async def first(spec: Any, slug: Any, **kwargs: Any) -> Any:
             kwargs["cache"].put("analyze", {"done": True})
-            raise RuntimeError("schema stalled")
+            raise StageTimeoutError("schema", 1)
 
         async def second(spec: Any, slug: Any, **kwargs: Any) -> Any:
             seen.append(kwargs["cache"].get("analyze"))
@@ -394,7 +395,7 @@ class TestStageCacheLifecycle:
 
         async def fails(spec: Any, slug: Any, **kwargs: Any) -> Any:
             kwargs["cache"].put("analyze", {"done": True})
-            raise RuntimeError("stalled")
+            raise StageTimeoutError("schema", 1)
 
         gen = SkillGenerator(api_key=SecretStr("k"))
         with patch.object(G, "run_pipeline", fails):
@@ -403,3 +404,34 @@ class TestStageCacheLifecycle:
         registry = SkillRegistry(skills_folder=tmp_path, generator=gen)
         assert registry.generations("aha") == []
         assert all(".gen-cache" not in s for s in registry.list_complete_skills())
+
+    async def test_content_failure_clears_the_cache(self, tmp_path: Path) -> None:
+        """A failure that is not a stall would recur on the same frozen inputs, so the
+        next attempt must redraw them (e.g. seed cannot satisfy the cached schema)."""
+        from simulation_harness.skills.generation.repair import GenerationStageError
+
+        async def content_fail(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            kwargs["cache"].put("schema", {"hard": True})
+            raise GenerationStageError("seed", ["db does not satisfy schema"])
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", content_fail):
+            with pytest.raises(RuntimeError):
+                await gen.generate_skill(SPEC, "aha", tmp_path)
+        assert self._cache_dirs(tmp_path) == []
+
+    async def test_dropped_connection_keeps_the_cache(self, tmp_path: Path) -> None:
+        import httpx
+        import openai
+
+        async def dropped(spec: Any, slug: Any, **kwargs: Any) -> Any:
+            kwargs["cache"].put("analyze", {"done": True})
+            raise openai.APIConnectionError(
+                request=httpx.Request("POST", "https://g/v1")
+            )
+
+        gen = SkillGenerator(api_key=SecretStr("k"))
+        with patch.object(G, "run_pipeline", dropped):
+            with pytest.raises(RuntimeError):
+                await gen.generate_skill(SPEC, "aha", tmp_path)
+        assert len(self._cache_dirs(tmp_path)) == 1

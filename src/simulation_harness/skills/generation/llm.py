@@ -83,8 +83,13 @@ def build_chat(
     if _no_cache_requested():
         kwargs["extra_body"] = {"cache": {"no-cache": True}}
     # Passed only when set, so an unconfigured pipeline keeps the client's own default.
+    # With a timeout, the SDK's own retries are turned off: _ainvoke is then the single
+    # retry layer, so one request's worst case is CONNECTION_ATTEMPTS x timeout + backoff —
+    # the figure the stage limit is sized against. The SDK default (2 retries) silently
+    # tripled every attempt.
     if timeout is not None:
         kwargs["timeout"] = timeout
+        kwargs["max_retries"] = 0
     return ChatOpenAI(**kwargs)
 
 

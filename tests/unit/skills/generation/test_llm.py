@@ -314,6 +314,9 @@ def test_build_chat_passes_timeout_when_set() -> None:
             timeout=300,
         )
         assert mock.call_args.kwargs["timeout"] == 300
+        # _ainvoke is the only retry layer, so the stage budget arithmetic holds; the SDK's
+        # default 2 retries would triple each attempt (review finding, 2026-10-20).
+        assert mock.call_args.kwargs["max_retries"] == 0
 
 
 def test_build_chat_omits_timeout_by_default() -> None:
@@ -327,6 +330,7 @@ def test_build_chat_omits_timeout_by_default() -> None:
             json_mode=False,
         )
         assert "timeout" not in mock.call_args.kwargs
+        assert "max_retries" not in mock.call_args.kwargs
 
 
 async def test_call_text_retries_a_client_timeout(_no_backoff: list[float]) -> None:

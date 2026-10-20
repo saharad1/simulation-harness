@@ -13,6 +13,7 @@ from simulation_harness.config.models import GenerationConfig
 from simulation_harness.skills.generation import run_pipeline
 from simulation_harness.skills.generation.repair import StageTimeoutError
 from simulation_harness.skills.generation.stage_cache import StageCache, cache_key
+from openai import APIConnectionError
 from simulation_harness.skills.manifest import MANIFEST_FILENAME, build_manifest
 
 # Backward-compat re-export: these moved to skills.generation.naming, but
@@ -29,6 +30,19 @@ from simulation_harness.skills.generation.naming import (
 # imports, to both linters and readers.
 #: Where in-progress generations keep their stage outputs, under the skills folder.
 CACHE_DIRNAME = ".gen-cache"
+
+
+def _is_stall(error: BaseException) -> bool:
+    """Whether a generation failed on the gateway (stage timeout, dropped connection) rather
+    than on content. Only a stall is worth resuming: a content failure would recur on the
+    same frozen inputs, so its cache is cleared and the next attempt redraws them."""
+    seen: BaseException | None = error
+    while seen is not None:
+        if isinstance(seen, (StageTimeoutError, APIConnectionError)):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
 
 __all__ = [
     "SkillGenerator",
@@ -166,6 +180,9 @@ class SkillGenerator:
         except Exception as e:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
+            # Keep the stage cache only for a stall; see _is_stall.
+            if not _is_stall(e):
+                cache.clear()
             # Preserve the stage-timeout signal — flattening it into a generic
             # RuntimeError would erase which stage stalled and prevent the
             # creator from classifying it as a timeout (see issue #19).

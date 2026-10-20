@@ -28,13 +28,50 @@ from simulation_harness.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+#: Config fields that change how long or how widely a stage runs, not what it produces.
+#: Excluded from the key: raising a timeout after a stall is exactly when a resume is wanted.
+_OPERATIONAL = {"concurrency", "stage_timeout_seconds", "request_timeout_seconds"}
+
+
+def _code_files() -> list[Path]:
+    """The generation code and prompts a stage's output depends on.
+
+    ``__version__`` is static and never bumped, so without this an edited prompt would hand
+    back the old prompt's cached output with no sign it had.
+    """
+    pkg = Path(__file__).resolve().parent  # skills/generation
+    prompts = pkg.parent / "assets" / "generation"  # skills/assets/generation
+    found = [*pkg.rglob("*.py"), *prompts.glob("*.md"), *prompts.glob("*.jinja2")]
+    return sorted(found)
+
+
+def _code_digest() -> str:
+    h = hashlib.sha256()
+    for f in _code_files():
+        h.update(f.name.encode("utf-8"))
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def _content_config(gen_config: GenerationConfig) -> dict:
+    """``gen_config`` without its operational knobs, at every level."""
+
+    def strip(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items() if k not in _OPERATIONAL}
+        return node
+
+    return strip(gen_config.model_dump(mode="json"))
+
+
 def cache_key(spec_dict: dict, model: str, gen_config: GenerationConfig) -> str:
     """Hex sha256 over every input that determines a stage's output."""
     material = {
         "spec": canonical_spec_digest(spec_dict),
         "model": model,
-        "config": gen_config.model_dump(mode="json"),
+        "config": _content_config(gen_config),
         "harness": __version__,
+        "code": _code_digest(),
     }
     blob = json.dumps(material, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

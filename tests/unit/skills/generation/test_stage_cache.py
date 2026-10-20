@@ -51,7 +51,7 @@ def test_key_changes_with_spec_model_and_config() -> None:
     base = cache_key(SPEC, "m", GenerationConfig())
     assert cache_key({**SPEC, "paths": {"/x": {}}}, "m", GenerationConfig()) != base
     assert cache_key(SPEC, "other", GenerationConfig()) != base
-    assert cache_key(SPEC, "m", GenerationConfig(concurrency=1)) != base
+    assert cache_key(SPEC, "m", GenerationConfig(scenarios_count=2)) != base
 
 
 def test_key_is_stable_across_dict_order() -> None:
@@ -63,3 +63,34 @@ def test_key_is_stable_across_dict_order() -> None:
     assert cache_key(reordered, "m", GenerationConfig()) == cache_key(
         SPEC, "m", GenerationConfig()
     )
+
+
+def test_operational_knobs_do_not_change_the_key() -> None:
+    """Raising a timeout after a stall must keep the resume, not discard it."""
+    from simulation_harness.config.models import StageParams
+
+    base = cache_key(SPEC, "m", GenerationConfig())
+    tuned = GenerationConfig(
+        concurrency=1,
+        stage_timeout_seconds=9999,
+        request_timeout_seconds=42,
+        extract=StageParams(max_tokens=8000, request_timeout_seconds=99),
+    )
+    assert cache_key(SPEC, "m", tuned) == base
+
+
+def test_a_code_or_prompt_change_changes_the_key(monkeypatch) -> None:
+    """An edited prompt must not hand back the old prompt's cached output."""
+    from simulation_harness.skills.generation import stage_cache
+
+    base = cache_key(SPEC, "m", GenerationConfig())
+    monkeypatch.setattr(stage_cache, "_code_digest", lambda: "edited")
+    assert cache_key(SPEC, "m", GenerationConfig()) != base
+
+
+def test_code_digest_covers_the_prompt_files() -> None:
+    from simulation_harness.skills.generation import stage_cache
+
+    files = stage_cache._code_files()
+    names = {f.name for f in files}
+    assert {"schema.md", "seed.md", "skill_preamble.jinja2", "pipeline.py"} <= names
