@@ -11,13 +11,21 @@
 # HARNESS_SKILLS_FOLDER is honored (generate into a scratch folder); HARNESS_CONFIG selects a
 # harness.yaml other than config/harness.yaml. One line per attempt is appended to
 # logs/regen-<name>.log: timestamp, attempt, exit code, last error line.
+#
+# A failure no retry can fix stops the loop at once: setup_cli rc 2 (spec not found), rc 3
+# (invalid spec), and rc 1 caused by missing or rejected credentials (a Secrets validation
+# error, 401/403/404). On 2026-10-20 a missing .env was retried with 5-minute pauses.
 set -uo pipefail
+
+# Text of a credentials/configuration failure, as setup_cli prints it.
+PERMANENT='validation error for Secrets|AuthenticationError|PermissionDeniedError|NotFoundError|ConfigValidationError'
+
 
 if [ $# -lt 2 ]; then
     echo "usage: $0 <spec.json> <name> [max_attempts=10] [pause_seconds=300]" >&2
     exit 2
 fi
-SPEC="$(realpath "$1")"  # absolute: the script cds to the repo root below
+SPEC="$(realpath -m "$1")"  # absolute: the script cds to the repo root below
 NAME="$2"
 MAX="${3:-10}"
 PAUSE="${4:-300}"
@@ -38,6 +46,11 @@ for attempt in $(seq 1 "$MAX"); do
         echo "published: $(tail -n 1 "$out")"
         rm -f "$out"
         exit 0
+    fi
+    if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ] || grep -qE "$PERMANENT" "$out"; then
+        echo "attempt $attempt failed permanently (rc=$rc), not retrying: $last" >&2
+        rm -f "$out"
+        exit "$rc"
     fi
     echo "attempt $attempt/$MAX failed (rc=$rc): $last" >&2
     rm -f "$out"
