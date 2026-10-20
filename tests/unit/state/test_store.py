@@ -412,4 +412,67 @@ class TestBadQueries:
             restaurant_store.list("restaurants", sort=[("nonexistent_field", "asc")])
 
 
+class TestUnknownFieldInWhere:
+    """A where clause on a field no record has must fail loudly, not match nothing.
+
+    Matching nothing is indistinguishable from "no such entity": a simulator that
+    guesses `name.first` for a stored `name.first_name` reads back `[]` and reports
+    the user does not exist (tau2-retail, 2026-10-18 — 48 of 104 conversations).
+    """
+
+    def test_unknown_nested_field_raises_with_real_names(
+        self, restaurant_store: Any
+    ) -> None:
+        with pytest.raises(BadQueryError) as exc:
+            restaurant_store.list("restaurants", where={"location.town": "Boston"})
+        message = str(exc.value)
+        assert "location.town" in message
+        assert "city" in message  # the field that does exist under `location`
+
+    def test_unknown_top_level_field_raises(self, restaurant_store: Any) -> None:
+        with pytest.raises(BadQueryError) as exc:
+            restaurant_store.list("restaurants", where={"town": "Boston"})
+        assert "cuisine" in str(exc.value)
+
+    def test_count_rejects_unknown_field_too(self, restaurant_store: Any) -> None:
+        with pytest.raises(BadQueryError):
+            restaurant_store.count("restaurants", where={"location.town": "Boston"})
+
+    def test_known_field_with_no_match_still_returns_empty(
+        self, restaurant_store: Any
+    ) -> None:
+        """A real field and a value nobody has is a legitimate empty result."""
+        assert (
+            restaurant_store.list("restaurants", where={"location.city": "Atlantis"})
+            == []
+        )
+
+    def test_field_present_on_some_records_is_known(
+        self, restaurant_store: Any
+    ) -> None:
+        """An optional field (absent on some rows) is still a real field.
+
+        The fixture seeds `notes` on one reservation and omits it on the other.
+        """
+        results = restaurant_store.list(
+            "reservations", where={"notes": "Anniversary dinner"}
+        )
+        assert len(results) == 1
+
+    def test_exists_false_on_absent_field_is_allowed(
+        self, restaurant_store: Any
+    ) -> None:
+        """`$exists: false` is how a caller asks for exactly the rows lacking a field."""
+        results = restaurant_store.list(
+            "restaurants", where={"never_stored": {"$exists": False}}
+        )
+        assert len(results) == len(restaurant_store.list("restaurants"))
+
+    def test_empty_store_cannot_reject(self, restaurant_store: Any) -> None:
+        """With no rows there is no evidence about field names, so no error."""
+        assert (
+            restaurant_store.list("cancellations", where={"anything.at_all": 1}) == []
+        )
+
+
 # Made with Bob

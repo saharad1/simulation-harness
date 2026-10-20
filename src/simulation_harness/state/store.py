@@ -123,6 +123,7 @@ class SimulationStore:
 
         # Apply filter
         if where:
+            self._check_where_fields(store, where)
             entities = [e for e in entities if self._matches_where(e, where)]
 
         # Apply sort (default: PK ascending)
@@ -167,6 +168,7 @@ class SimulationStore:
         if where is None:
             return len(self._data[store])
 
+        self._check_where_fields(store, where)
         return sum(
             1 for e in self._data[store].values() if self._matches_where(e, where)
         )
@@ -363,6 +365,56 @@ class SimulationStore:
                     return False
 
         return True
+
+    def _check_where_fields(self, store: str, where: dict) -> None:
+        """Reject a where clause naming a field that no record in ``store`` has.
+
+        ``_matches_where`` treats a missing field as "no match", so a misspelled path
+        silently filters every row out and reads as "no such entity" — on tau2-retail a
+        simulator guessing ``name.first`` for the stored ``name.first_name`` told the
+        agent that users it held did not exist. A field present on at least one row is
+        real (optional fields are absent on some), and ``$exists: false`` is a
+        legitimate query for an absent field, so neither is rejected. An empty store
+        holds no evidence about field names and is never rejected.
+
+        Raises:
+            BadQueryError: Naming the unknown path and the fields that do exist at
+                that level, so the caller can correct the query.
+        """
+        rows = list(self._data[store].values())
+        if not rows:
+            return
+        for field_path, predicate in where.items():
+            if isinstance(predicate, dict) and predicate.get("$exists") is False:
+                continue
+            if any(self._has_path(row, field_path) for row in rows):
+                continue
+            parent, _, _ = field_path.rpartition(".")
+            known = sorted(self._keys_at(rows, parent))
+            where_at = f"'{parent}'" if parent else f"store '{store}'"
+            raise BadQueryError(
+                f"Unknown field '{field_path}' in store '{store}': no record has it. "
+                f"Fields of {where_at}: {', '.join(known) if known else '(none)'}"
+            )
+
+    def _has_path(self, obj: dict, path: str) -> bool:
+        try:
+            self._get_nested_value(obj, path)
+        except KeyError:
+            return False
+        return True
+
+    def _keys_at(self, rows: "list[dict]", parent: str) -> set[str]:
+        """Union of keys found at ``parent`` (``""`` = top level) across ``rows``."""
+        keys: set[str] = set()
+        for row in rows:
+            try:
+                node = self._get_nested_value(row, parent) if parent else row
+            except KeyError:
+                continue
+            if isinstance(node, dict):
+                keys.update(k for k in node if isinstance(k, str))
+        return keys
 
     def _get_nested_value(self, obj: dict, path: str) -> Any:
         """Get a value from a nested object using a dotted path.

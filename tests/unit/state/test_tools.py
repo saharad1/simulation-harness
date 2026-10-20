@@ -124,6 +124,22 @@ class TestStateList:
         ratings = [r["rating"] for r in result]
         assert ratings == sorted(ratings, reverse=True)
 
+    def test_list_with_unknown_where_field_tells_the_agent(
+        self, tools: Any, mock_config: dict[str, Any]
+    ) -> None:
+        """The simulator agent sees an unknown field as a bad_query naming the real
+        fields, not as an empty result it would report as "not found"."""
+        tool = next(t for t in tools if t.name == "state_list")
+
+        result = tool.func(
+            store="restaurants", where={"location.town": "Boston"}, config=mock_config
+        )
+
+        assert isinstance(result, dict)
+        assert result["error"] == "bad_query"
+        assert "location.town" in result["message"]
+        assert "city" in result["message"]
+
     def test_list_with_malformed_sort(
         self, tools: Any, mock_config: dict[str, Any]
     ) -> None:
