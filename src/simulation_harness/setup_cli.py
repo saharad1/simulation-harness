@@ -100,6 +100,12 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except Exception as e:  # generation / config / secrets failure
         print(f"ERROR: setup failed: {e}", file=sys.stderr)
+        # The outer message ("Skill generation failed for ...") names no stage; the cause
+        # chain is where the stalled stage or the gateway error actually is.
+        cause = e.__cause__
+        while cause is not None:
+            print(f"  caused by {type(cause).__name__}: {cause}", file=sys.stderr)
+            cause = cause.__cause__
         return 1
 
     print(str(artifact_dir))
