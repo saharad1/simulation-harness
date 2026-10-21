@@ -81,14 +81,26 @@ S2_RETRY = "S2_retry"
 
 S4_SECTION_RETRY = "S4_section_retry"
 
-#: S4: an error body refusing the operation itself ("unknown operation: x", "Operation not
-#: found", "The operation is not defined ..."), as opposed to a not-found about the data.
+#: S4 (plan 28 I3): the one list of patterns for an error body refusing the operation
+#: itself ("unknown operation: x", "Operation not found", "The operation is not defined
+#: ..."), as opposed to a not-found about the data. Matched case-insensitively, any one
+#: suffices. The eval repo's S4 detector copies this list (its test pins the phrasings
+#: in ``tests/fixtures/s4_refusal_phrasings.json``); change both together.
+_SEP = r"[\s_-]+"
+_OP = r"(?:operation|endpoint|tool)"
+#: An optional name between the noun and its verb: "operation `modify_user_address` is ...".
+_NAME = r"(?:[\s_-]+[`'\"]?[\w/{}.:-]+[`'\"]?)?"
+UNKNOWN_OPERATION_PATTERNS: tuple[str, ...] = (
+    rf"\b(?:unknown|unsupported|undefined|unrecogni[sz]ed|invalid){_SEP}{_OP}\b",
+    rf"\b{_OP}{_NAME}{_SEP}(?:is{_SEP})?not{_SEP}"
+    r"(?:found|defined|supported|recogni[sz]ed|available|implemented)\b",
+    rf"\b{_OP}{_NAME}{_SEP}does{_SEP}not{_SEP}exist\b",
+    rf"\bno{_SEP}such{_SEP}{_OP}\b",
+    rf"\bnot{_SEP}defined{_SEP}(?:in|by){_SEP}(?:the{_SEP})?"
+    r"(?:skill|api|spec|specification|simulation)\b",
+)
 _UNKNOWN_OPERATION = re.compile(
-    r"(?i)\b(?:unknown|unsupported|undefined|unrecogni[sz]ed|invalid)[\s_-]+"
-    r"(?:operation|endpoint)\b"
-    r"|\b(?:operation|endpoint)[\s_-]+(?:is[\s_-]+)?(?:not[\s_-]+"
-    r"(?:found|defined|supported|recogni[sz]ed|available|implemented)"
-    r"|does[\s_-]+not[\s_-]+exist)\b"
+    "(?i)" + "|".join(f"(?:{p})" for p in UNKNOWN_OPERATION_PATTERNS)
 )
 
 

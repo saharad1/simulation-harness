@@ -580,6 +580,37 @@ async def test_s4_other_errors_and_no_skill_are_not_retried(tmp_path: Path) -> N
     assert fake.cursor == 1
 
 
+_PHRASINGS = json.loads(
+    (_FIXTURE_SKILL_DIR.parent / "s4_refusal_phrasings.json").read_text()
+)
+
+
+@pytest.mark.parametrize("text", _PHRASINGS["refusals"])
+def test_s4_refusal_phrasings_are_refusals(text: str) -> None:
+    """I3: the pinned phrasings (shared with the eval's S4 detector) all count."""
+    from simulation_harness.agent.deep_agent import _is_unknown_operation
+
+    assert _is_unknown_operation({"error": text})
+    assert _is_unknown_operation({"error": "not_found", "message": text})
+
+
+@pytest.mark.parametrize("text", _PHRASINGS["not_refusals"])
+def test_s4_pinned_ordinary_errors_are_not_refusals(text: str) -> None:
+    from simulation_harness.agent.deep_agent import _is_unknown_operation
+
+    assert not _is_unknown_operation({"error": text})
+
+
+def test_s4_patterns_are_one_module_constant() -> None:
+    """I3: the regex is built from UNKNOWN_OPERATION_PATTERNS alone, the list the eval
+    detector copies."""
+    from simulation_harness.agent import deep_agent
+
+    assert deep_agent._UNKNOWN_OPERATION.pattern == "(?i)" + "|".join(
+        f"(?:{p})" for p in deep_agent.UNKNOWN_OPERATION_PATTERNS
+    )
+
+
 @pytest.mark.parametrize(
     "body",
     [

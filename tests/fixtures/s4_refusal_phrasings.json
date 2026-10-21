@@ -1,0 +1,32 @@
+{
+  "_comment": "Plan 28 I3: pinned phrasings for the S4 refusal patterns (deep_agent.UNKNOWN_OPERATION_PATTERNS). The eval repo copies this file and asserts its detector matches every 'refusals' entry. Each entry is the text of an error body's error/message/details/reason fields.",
+  "refusals": [
+    "unknown operation: modify_user_address",
+    "Unknown operation",
+    "Operation not found",
+    "unsupported_operation",
+    "Unsupported operation",
+    "The operation is not defined in the skill",
+    "Operation is not supported",
+    "operation not implemented",
+    "Operation does not exist",
+    "Endpoint does not exist",
+    "invalid endpoint",
+    "Unknown endpoint: /modify_user_address",
+    "unknown tool: modify_user_address",
+    "Operation modify_user_address is not defined",
+    "The operation `modify_user_address` does not exist in this API",
+    "No such operation: modify_user_address",
+    "modify_user_address is not defined in the skill",
+    "This endpoint is not defined by the API specification",
+    "Operation not recognized"
+  ],
+  "not_refusals": [
+    "Order not found",
+    "User not found",
+    "Failed to generate valid JSON response",
+    "Payment method not found for this operation",
+    "Reservation does not exist",
+    "Store write failed"
+  ]
+}
