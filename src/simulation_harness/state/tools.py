@@ -4,6 +4,8 @@ These tools expose the SimulationStore to the LLM via structured tool calls.
 Each tool resolves the per-thread store from a registry passed via RunnableConfig.
 """
 
+import json
+import logging
 from typing import Annotated, Any
 
 from langchain_core.runnables import RunnableConfig
@@ -19,6 +21,46 @@ from .errors import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+# The agent's FilesystemMiddleware (deepagents) saves a tool result over 20,000 tokens to a file
+# and the simulator reads it back with read_file, which pages by LINE and cuts each read at
+# 20,000 tokens x 4 chars. A listing serialized as one JSON line was cut mid-list there, so the
+# simulator saw only the first records and reported them as the whole store (tau2-retail: 41 of
+# 50 products). Rows are therefore emitted one per line, and listings past the limit are logged.
+EVICT_CHARS = 20_000 * 4
+
+_FIELDS_DESCRIPTION = (
+    "Optional top-level fields to return for each entity, e.g. ['product_id', 'name']; "
+    "omit for whole entities. Use it to keep large listings small."
+)
+
+
+def rows_text(rows: list[dict]) -> str:
+    """A JSON array with one record per line, so a paged read never splits a record."""
+    if not rows:
+        return "[]"
+    return "[\n" + ",\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n]"
+
+
+def _project(entity: dict, fields: list[str] | None) -> dict:
+    return entity if not fields else {f: entity[f] for f in fields if f in entity}
+
+
+def _unknown_fields(rows: list[dict], fields: list[str] | None) -> dict | None:
+    """A bad_query naming the real fields when a requested field is on no record."""
+    if not fields or not rows:
+        return None
+    present = set().union(*(r.keys() for r in rows))
+    missing = [f for f in fields if f not in present]
+    if not missing:
+        return None
+    return {
+        "error": "bad_query",
+        "message": f"Unknown field(s) {missing}; available fields: {sorted(present)}",
+    }
+
+
 # Pydantic models for tool arguments
 
 
@@ -29,6 +71,7 @@ class StateGetArgs(BaseModel):
         ..., description="The store name (e.g., 'restaurants', 'reservations')"
     )
     id: str = Field(..., description="The primary key value to retrieve")
+    fields: list[str] | None = Field(None, description=_FIELDS_DESCRIPTION)
 
 
 class StateListArgs(BaseModel):
@@ -42,6 +85,7 @@ class StateListArgs(BaseModel):
         None, description="Optional sort specification as [[field, 'asc'|'desc'], ...]"
     )
     limit: int | None = Field(None, description="Optional maximum number of results")
+    fields: list[str] | None = Field(None, description=_FIELDS_DESCRIPTION)
 
 
 class StateCountArgs(BaseModel):
@@ -129,13 +173,18 @@ def _error_to_dict(error: Exception) -> dict:
 
 
 def state_get(
-    store: str, id: str, *, config: Annotated[RunnableConfig, InjectedToolArg]
+    store: str,
+    id: str,
+    fields: list[str] | None = None,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> dict:
     """Get an entity by its primary key.
 
     Args:
         store: The store name
         id: The primary key value
+        fields: Optional top-level fields to return
         config: Injected RunnableConfig (not visible to LLM)
 
     Returns:
@@ -151,7 +200,7 @@ def state_get(
                 "message": f"Entity with id '{id}' not found in store '{store}'",
             }
 
-        return entity
+        return _unknown_fields([entity], fields) or _project(entity, fields)
 
     except Exception as e:
         return _error_to_dict(e)
@@ -162,9 +211,10 @@ def state_list(
     where: dict | None = None,
     sort: list[list[str]] | None = None,
     limit: int | None = None,
+    fields: list[str] | None = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
-) -> list[dict] | dict:
+) -> str | dict:
     """List entities from a store with optional filtering and sorting.
 
     Args:
@@ -172,10 +222,12 @@ def state_list(
         where: Optional filter predicates
         sort: Optional sort specification as list of [field, direction] pairs
         limit: Optional result limit
+        fields: Optional top-level fields to return for each entity
         config: Injected RunnableConfig (not visible to LLM)
 
     Returns:
-        List of entities, or an error dict
+        The entities as a JSON array, one record per line (see ``rows_text``), or an
+        error dict
     """
     try:
         sim_store = _get_store_from_config(config)
@@ -193,7 +245,20 @@ def state_list(
             # Convert list of lists to list of tuples for internal API
             sort_tuples = [(field, direction) for field, direction in sort]
 
-        return sim_store.list(store, where=where, sort=sort_tuples, limit=limit)
+        rows = sim_store.list(store, where=where, sort=sort_tuples, limit=limit)
+        bad = _unknown_fields(rows, fields)
+        if bad:
+            return bad
+        text = rows_text([_project(r, fields) for r in rows])
+        if len(text) > EVICT_CHARS:
+            logger.warning(
+                "state_list result offloaded to a file: store=%s rows=%d chars=%d fields=%s",
+                store,
+                len(rows),
+                len(text),
+                fields,
+            )
+        return text
 
     except Exception as e:
         return _error_to_dict(e)

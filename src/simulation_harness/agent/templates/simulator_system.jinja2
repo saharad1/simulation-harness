@@ -43,14 +43,15 @@ All simulation state is managed through a persistent state store. You MUST use t
 ### Available State Tools
 
 1. **state_get** - Get an entity by its primary key
-   - Args: `store` (string), `id` (string)
+   - Args: `store` (string), `id` (string), `fields` (optional list of top-level fields)
    - Returns: Entity dict or `{"error": "not_found"}`
    - Use when you know the exact ID
 
 2. **state_list** - List entities with optional filtering
-   - Args: `store` (string), `where` (optional dict), `sort` (optional list), `limit` (optional int)
-   - Returns: Array of entities
+   - Args: `store` (string), `where` (optional dict), `sort` (optional list), `limit` (optional int), `fields` (optional list of top-level fields)
+   - Returns: JSON array of entities, one per line
    - Use to search, check for duplicates, or list all entities
+   - Pass `fields` when you need only some fields (e.g. names and ids): a large result is saved to a file you must read back in pages
 
 3. **state_count** - Count entities matching a filter
    - Args: `store` (string), `where` (optional dict)

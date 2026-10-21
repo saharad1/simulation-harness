@@ -1,8 +1,12 @@
 """Tests for state tools."""
 
+import json
+import logging
+
 import pytest
 
 from simulation_harness.state import StoreRegistry, create_state_tools
+from simulation_harness.state.tools import EVICT_CHARS, rows_text
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +23,12 @@ def registry(skill_dir: Path) -> StoreRegistry:
 def mock_config(registry: StoreRegistry) -> dict[str, Any]:
     """Create a mock RunnableConfig."""
     return {"configurable": {"store_registry": registry, "thread_id": "test_thread"}}
+
+
+def _rows(result: Any) -> list[dict]:
+    """state_list returns its rows as text, one record per line; parse it back."""
+    assert isinstance(result, str), result
+    return json.loads(result)
 
 
 @pytest.fixture
@@ -56,6 +66,17 @@ class TestStateGet:
         assert result["id"] == "rest_001"
         assert result["name"] == "The Italian Corner"
 
+    def test_get_fields_returns_only_those_fields(
+        self, tools: Any, mock_config: dict[str, Any]
+    ) -> None:
+        tool = next(t for t in tools if t.name == "state_get")
+
+        result = tool.func(
+            store="restaurants", id="rest_001", fields=["name"], config=mock_config
+        )
+
+        assert result == {"name": "The Italian Corner"}
+
     def test_get_nonexistent_entity(
         self, tools: Any, mock_config: dict[str, Any]
     ) -> None:
@@ -84,20 +105,20 @@ class TestStateList:
         """Test listing all entities."""
         tool = next(t for t in tools if t.name == "state_list")
 
-        result = tool.func(store="restaurants", config=mock_config)
+        result = _rows(tool.func(store="restaurants", config=mock_config))
 
-        assert isinstance(result, list)
         assert len(result) >= 3
 
     def test_list_with_filter(self, tools: Any, mock_config: dict[str, Any]) -> None:
         """Test listing with a filter."""
         tool = next(t for t in tools if t.name == "state_list")
 
-        result = tool.func(
-            store="restaurants", where={"cuisine": "Italian"}, config=mock_config
+        result = _rows(
+            tool.func(
+                store="restaurants", where={"cuisine": "Italian"}, config=mock_config
+            )
         )
 
-        assert isinstance(result, list)
         assert all(r["cuisine"] == "Italian" for r in result)
 
     def test_list_with_sort(self, tools: Any, mock_config: dict[str, Any]) -> None:
@@ -105,22 +126,22 @@ class TestStateList:
         tool = next(t for t in tools if t.name == "state_list")
 
         # Test sorting by name ascending
-        result = tool.func(
-            store="restaurants", sort=[["name", "asc"]], config=mock_config
+        result = _rows(
+            tool.func(store="restaurants", sort=[["name", "asc"]], config=mock_config)
         )
 
-        assert isinstance(result, list)
         assert len(result) >= 3
         # Verify sorting worked (names should be in ascending order)
         names = [r["name"] for r in result]
         assert names == sorted(names)
 
         # Test sorting by rating descending
-        result = tool.func(
-            store="restaurants", sort=[["rating", "desc"]], config=mock_config
+        result = _rows(
+            tool.func(
+                store="restaurants", sort=[["rating", "desc"]], config=mock_config
+            )
         )
 
-        assert isinstance(result, list)
         ratings = [r["rating"] for r in result]
         assert ratings == sorted(ratings, reverse=True)
 
@@ -166,10 +187,70 @@ class TestStateList:
         """Test listing with a limit."""
         tool = next(t for t in tools if t.name == "state_list")
 
-        result = tool.func(store="restaurants", limit=2, config=mock_config)
+        result = _rows(tool.func(store="restaurants", limit=2, config=mock_config))
 
-        assert isinstance(result, list)
         assert len(result) == 2
+
+    def test_list_fields_returns_only_those_fields(
+        self, tools: Any, mock_config: dict[str, Any]
+    ) -> None:
+        """A projection keeps a listing small: names and ids, not every nested field."""
+        tool = next(t for t in tools if t.name == "state_list")
+
+        result = _rows(
+            tool.func(store="restaurants", fields=["id", "name"], config=mock_config)
+        )
+
+        assert len(result) >= 3
+        assert all(set(r) == {"id", "name"} for r in result)
+
+    def test_list_fields_unknown_field_names_the_real_ones(
+        self, tools: Any, mock_config: dict[str, Any]
+    ) -> None:
+        tool = next(t for t in tools if t.name == "state_list")
+
+        result = tool.func(store="restaurants", fields=["nickname"], config=mock_config)
+
+        assert isinstance(result, dict)
+        assert result["error"] == "bad_query"
+        assert "nickname" in result["message"] and "cuisine" in result["message"]
+
+
+class TestLargeResults:
+    """A result over the agent's tool-result limit is saved to a file and read back with
+    read_file, which pages by LINE and caps each read at EVICT_CHARS. One record per line
+    keeps every record whole and reachable; a single-line array was cut mid-list (retail:
+    41 of 50 products, the rest silently gone)."""
+
+    def test_rows_text_is_one_record_per_line(self) -> None:
+        rows = [{"product_id": f"{i:010d}", "blob": "x" * 2000} for i in range(50)]
+
+        text = rows_text(rows)
+
+        assert len(text) > EVICT_CHARS  # large enough to be offloaded
+        lines = text.splitlines()
+        assert len(lines) == 52  # "[", 50 records, "]"
+        assert all(len(line) < EVICT_CHARS for line in lines)
+        for line in lines[1:-1]:
+            json.loads(line.rstrip(","))  # each record parses on its own line
+        assert json.loads(text) == rows
+
+    def test_large_listing_is_logged(
+        self, tools: Any, mock_config: dict[str, Any], caplog: Any
+    ) -> None:
+        tool = next(t for t in tools if t.name == "state_list")
+        get = next(t for t in tools if t.name == "state_get")
+        big = {**get.func(store="restaurants", id="rest_001", config=mock_config)}
+        big.update(id="rest_big", name="y" * EVICT_CHARS)
+        inserted = next(t for t in tools if t.name == "state_insert").func(
+            store="restaurants", entity=big, config=mock_config
+        )
+        assert "error" not in inserted, inserted
+
+        with caplog.at_level(logging.WARNING, logger="simulation_harness.state.tools"):
+            tool.func(store="restaurants", config=mock_config)
+
+        assert any("offload" in r.getMessage() for r in caplog.records)
 
 
 class TestStateCount:
