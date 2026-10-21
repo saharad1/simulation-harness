@@ -90,12 +90,19 @@ _SEP = r"[\s_-]+"
 _OP = r"(?:operation|endpoint|tool)"
 #: An optional name between the noun and its verb: "operation `modify_user_address` is ...".
 _NAME = r"(?:[\s_-]+[`'\"]?[\w/{}.:-]+[`'\"]?)?"
+#: Not when a condition follows (review M1): "This operation is not supported for
+#: non-pending orders" is a business refusal the skill may require, not "undefined".
+_NO_CONDITION = (
+    rf"(?!{_SEP}(?:for|because|when|while|unless|since|once|if|after|before|as|due)\b)"
+)
 UNKNOWN_OPERATION_PATTERNS: tuple[str, ...] = (
-    rf"\b(?:unknown|unsupported|undefined|unrecogni[sz]ed|invalid){_SEP}{_OP}\b",
+    # "invalid" only with "endpoint": "Invalid operation: ..." is a business refusal.
+    rf"\b(?:(?:unknown|unsupported|undefined|unrecogni[sz]ed){_SEP}{_OP}"
+    rf"|invalid{_SEP}endpoint)\b{_NO_CONDITION}",
     rf"\b{_OP}{_NAME}{_SEP}(?:is{_SEP})?not{_SEP}"
-    r"(?:found|defined|supported|recogni[sz]ed|available|implemented)\b",
-    rf"\b{_OP}{_NAME}{_SEP}does{_SEP}not{_SEP}exist\b",
-    rf"\bno{_SEP}such{_SEP}{_OP}\b",
+    rf"(?:found|defined|supported|recogni[sz]ed|available|implemented)\b{_NO_CONDITION}",
+    rf"\b{_OP}{_NAME}{_SEP}does{_SEP}not{_SEP}exist\b{_NO_CONDITION}",
+    rf"\bno{_SEP}such{_SEP}{_OP}\b{_NO_CONDITION}",
     rf"\bnot{_SEP}defined{_SEP}(?:in|by){_SEP}(?:the{_SEP})?"
     r"(?:skill|api|spec|specification|simulation)\b",
 )

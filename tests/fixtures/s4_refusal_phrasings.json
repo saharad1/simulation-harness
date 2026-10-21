@@ -27,6 +27,11 @@
     "Failed to generate valid JSON response",
     "Payment method not found for this operation",
     "Reservation does not exist",
-    "Store write failed"
+    "Store write failed",
+    "This operation is not supported for non-pending orders",
+    "Invalid operation: the order has already been delivered",
+    "Operation not available for basic economy reservations",
+    "The operation is not supported because the flight has departed",
+    "Operation not supported when the reservation is cancelled"
   ]
 }
