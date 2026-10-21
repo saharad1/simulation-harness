@@ -233,6 +233,7 @@ def tool_calls_of(
 #: the fix is recorded under in ``fix_fired`` (plan 28 step 3).
 FIX_ERROR_CODES = {
     "unknown_field": "S3a_bad_path",
+    "result_too_large": "E1_refused",
 }
 
 

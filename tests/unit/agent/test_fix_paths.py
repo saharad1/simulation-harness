@@ -81,6 +81,7 @@ def _spec() -> Any:
     spec.info = {"title": "Test API", "version": "1.0.0", "description": "Test"}
     spec.servers = [{"url": "https://api.example.com"}]
     spec.operations = []
+    spec.spec_dict = {"openapi": "3.0.0", "paths": {}}
     return spec
 
 
@@ -172,3 +173,63 @@ async def test_ordinary_call_fires_no_fix(tmp_path: Path) -> None:
     assert fake.seen[1][-1]["content"] == []  # an existing path matching nothing: []
     (rec,) = _records(tmp_path / "t")
     assert rec["fix_fired"] == []
+
+
+# --- S3b / E1: an unfiltered list that would be evicted ------------------------------------
+
+
+def _pad_restaurants(agent: DeepAgent, n: int = 400) -> None:
+    """Grow `restaurants` past the ~80k-char eviction threshold."""
+    assert agent.store_registry is not None
+    store = agent.store_registry.for_thread("default")
+    base = store.get("restaurants", "rest_001")
+    assert base is not None
+    for i in range(n):
+        store.insert(
+            "restaurants", {**base, "id": f"rest_pad_{i:03d}", "description": "x" * 250}
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill_enabled", [True, False], ids=["full", "no_skill"])
+async def test_e1_unfiltered_oversized_list_is_refused_in_every_condition(
+    tmp_path: Path, skill_enabled: bool
+) -> None:
+    script = [
+        _call("c1", "state_list", store="restaurants"),
+        _call("c2", "state_get", store="restaurants", id="rest_001"),
+        _OK,
+    ]
+    agent, fake = _agent(tmp_path / "t", script, skill_enabled=skill_enabled)
+    _pad_restaurants(agent)
+    try:
+        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    assert out == {"id": "rest_001", "name": "The Italian Corner"}
+    refused = json.loads(fake.seen[1][-1]["content"])
+    assert refused["error"] == "result_too_large"
+    assert "location.postal_code" in refused["fields"]
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["E1_refused"]
+    assert rec["any_evicted"] is False  # nothing reached the eviction path
+
+
+@pytest.mark.asyncio
+async def test_e1_filtered_oversized_list_is_still_evicted_as_before(
+    tmp_path: Path,
+) -> None:
+    """A filtered (or limited) read is not the bug: it is answered, and evicted, as in v1."""
+    script = [
+        _call("c1", "state_list", store="restaurants", limit=1000),
+        _OK,
+    ]
+    agent, _ = _agent(tmp_path / "t", script)
+    _pad_restaurants(agent)
+    try:
+        await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == []
+    assert rec["tool_calls"][0]["evicted"] is True

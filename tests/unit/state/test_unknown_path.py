@@ -177,3 +177,70 @@ def test_sort_on_existing_path_is_unchanged(store: SimulationStore) -> None:
     with pytest.raises(BadQueryError) as exc:
         store.list("users", sort=[("legacy_flag", "asc")])
     assert not isinstance(exc.value, UnknownFieldError)
+
+
+# --- S3b / E1: an unfiltered state_list too large to show is refused ---------------------
+
+
+def _big_store(n: int) -> SimulationStore:
+    seed = {
+        "users": [
+            {
+                "user_id": f"user_{i:04d}",
+                "name": {"first_name": f"F{i}", "last_name": f"L{i}"},
+                "address": {"zip": f"{i:05d}"},
+                "email": f"user{i}@example.com",
+                "bio": "x" * 400,
+            }
+            for i in range(n)
+        ],
+        "audit": [],
+    }
+    return SimulationStore(_SCHEMA, seed, {"users": "user_id", "audit": "id"})
+
+
+def test_e1_threshold_is_deepagents_eviction_limit() -> None:
+    import inspect
+
+    from deepagents.middleware.filesystem import (
+        NUM_CHARS_PER_TOKEN,
+        FilesystemMiddleware,
+    )
+
+    from simulation_harness.state.tools import eviction_threshold_chars
+
+    default = (
+        inspect.signature(FilesystemMiddleware.__init__)
+        .parameters["tool_token_limit_before_evict"]
+        .default
+    )
+    assert eviction_threshold_chars() == NUM_CHARS_PER_TOKEN * default == 80_000
+
+
+def test_e1_unfiltered_list_over_eviction_limit_is_refused() -> None:
+    store = _big_store(300)  # ~170k chars serialized
+    out = state_list("users", config=_config(store))
+    assert isinstance(out, dict)
+    assert out["error"] == "result_too_large"
+    assert out["records"] == 300
+    assert out["chars"] > 80_000
+    assert "name.first_name" in out["fields"] and "email" in out["fields"]
+    assert "where" in out["message"]
+    # An empty where is no filter either.
+    again = state_list("users", where={}, config=_config(store))
+    assert isinstance(again, dict) and again["error"] == "result_too_large"
+
+
+def test_e1_filtered_limited_or_small_lists_are_unchanged() -> None:
+    store = _big_store(300)
+    cfg = _config(store)
+    # Filtered: answered as before, however large.
+    rows = state_list("users", where={"bio": "x" * 400}, config=cfg)
+    assert isinstance(rows, list) and len(rows) == 300
+    # Limited: answered as before.
+    rows = state_list("users", limit=250, config=cfg)
+    assert isinstance(rows, list) and len(rows) == 250
+    # Small store, unfiltered: answered as before.
+    small = _big_store(20)
+    rows = state_list("users", config=_config(small))
+    assert isinstance(rows, list) and len(rows) == 20

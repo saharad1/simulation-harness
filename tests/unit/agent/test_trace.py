@@ -68,7 +68,13 @@ def _script() -> list[AIMessage]:
                     "name": "read_file",
                     "args": {"file_path": _SKILL_MD, "offset": 0, "limit": 20},
                 },
-                {"id": "c2", "name": "state_list", "args": {"store": "restaurants"}},
+                # `limit`: an unfiltered list this size is refused (plan 28 E1); a limited
+                # one is still answered, and evicted, which is what this test traces.
+                {
+                    "id": "c2",
+                    "name": "state_list",
+                    "args": {"store": "restaurants", "limit": 1000},
+                },
                 {
                     "id": "c3",
                     "name": "state_get",
@@ -199,7 +205,7 @@ async def test_trace_record_fields(tmp_path: Path) -> None:
     assert read["result_chars"] > 0
 
     listed = by_id["c2"]
-    assert listed["args"] == {"store": "restaurants"}
+    assert listed["args"] == {"store": "restaurants", "limit": 1000}
     assert listed["evicted"] is True
     assert listed["result_chars"] > 80_000  # what the tool produced
     assert listed["shown_chars"] < listed["result_chars"]  # what the model saw

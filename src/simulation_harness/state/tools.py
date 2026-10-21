@@ -4,6 +4,9 @@ These tools expose the SimulationStore to the LLM via structured tool calls.
 Each tool resolves the per-thread store from a registry passed via RunnableConfig.
 """
 
+import functools
+import inspect
+import json
 from typing import Annotated, Any
 
 from langchain_core.runnables import RunnableConfig
@@ -165,6 +168,61 @@ def state_get(
         return _error_to_dict(e)
 
 
+@functools.cache
+def eviction_threshold_chars() -> int | None:
+    """The size above which the agent's FilesystemMiddleware evicts a tool result, in chars.
+
+    Read from deepagents itself -- the default ``tool_token_limit_before_evict`` of
+    ``FilesystemMiddleware`` (which ``DeepAgent`` constructs without overriding it) times
+    ``NUM_CHARS_PER_TOKEN`` -- so there is no second copy of the number to drift.
+    ``None`` if eviction is off by default.
+    """
+    from deepagents.middleware.filesystem import (
+        NUM_CHARS_PER_TOKEN,
+        FilesystemMiddleware,
+    )
+
+    limit = (
+        inspect.signature(FilesystemMiddleware.__init__)
+        .parameters["tool_token_limit_before_evict"]
+        .default
+    )
+    return NUM_CHARS_PER_TOKEN * limit if isinstance(limit, int) and limit else None
+
+
+def _too_large_to_show(sim_store: Any, store: str, rows: list[dict]) -> dict | None:
+    """The refusal for an unfiltered list whose result would be evicted, else None.
+
+    An evicted result is replaced by a short preview and a file the LLM can only grep;
+    the store files are single JSON lines, so grep hands back the whole line cut at the
+    limit, and in v1 the LLM missed a user inside that blob (plan 28 S3b / E1). The
+    no_skill agent has no eviction and overflowed its context instead. Refusing with the
+    filterable paths makes every condition re-ask with a ``where``.
+    """
+    threshold = eviction_threshold_chars()
+    if threshold is None:
+        return None
+    # The same serialization LangChain gives a list tool result (ToolMessage content).
+    chars = len(json.dumps(rows, ensure_ascii=False))
+    if chars <= threshold:
+        return None
+    fields, more = sim_store.field_paths(store)
+    listed = ", ".join(fields) + (f", ... (+{more} more)" if more else "")
+    return {
+        "error": "result_too_large",
+        "message": (
+            f"state_list on '{store}' without `where` or `limit` would return "
+            f"{len(rows)} records ({chars} chars), over the {threshold}-char tool-result "
+            f"limit, and would not be shown to you. Query with a `where` filter on the "
+            f"fields you need (dotted paths). Filterable paths: {listed}"
+        ),
+        "store": store,
+        "records": len(rows),
+        "chars": chars,
+        "fields": fields,
+    }
+
+
 def state_list(
     store: str,
     where: dict | None = None,
@@ -201,7 +259,12 @@ def state_list(
             # Convert list of lists to list of tuples for internal API
             sort_tuples = [(field, direction) for field, direction in sort]
 
-        return sim_store.list(store, where=where, sort=sort_tuples, limit=limit)
+        rows = sim_store.list(store, where=where, sort=sort_tuples, limit=limit)
+        if not where and not limit:
+            refusal = _too_large_to_show(sim_store, store, rows)
+            if refusal is not None:
+                return refusal
+        return rows
 
     except Exception as e:
         return _error_to_dict(e)
