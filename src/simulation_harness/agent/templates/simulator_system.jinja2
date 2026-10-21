@@ -91,6 +91,8 @@ All simulation state is managed through a persistent state store. You MUST use t
    - Returns: `{"result": string}` or an error
    - Use `calculate` for every arithmetic result you write or return.
 
+If `state_insert`, `state_update` or `state_delete` returns an error, that write did not happen and the operation failed: your response must be an error unless you retry the same write and it succeeds.
+
 ### Query DSL (for `where` parameter)
 
 The `where` parameter accepts a JSON object with these operators:

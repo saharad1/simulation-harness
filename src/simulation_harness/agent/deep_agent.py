@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -50,6 +55,68 @@ logger = get_logger(__name__)
 # wrong (the previous rules needed five patterns to cover dot-prefixed paths,
 # because wcmatch's GLOBSTAR does not imply DOTGLOB).
 _READONLY_FS_TOOLS: list[FsToolName] = ["ls", "read_file", "glob", "grep"]
+
+
+# Store writes whose failure means the write did not happen. A rejected write is
+# returned to the LLM as an ordinary tool result, so nothing but this check stops the
+# LLM from ignoring it and answering with a success body built on the turn's other
+# writes. Only these codes: `not_found`/`duplicate_key` are answers an operation may
+# legitimately branch on (look up, then insert or update).
+_STORE_WRITE_TOOLS = frozenset({"state_insert", "state_update", "state_delete"})
+_FAILED_WRITE_ERRORS = frozenset({"validation_error", "internal_error"})
+
+
+def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
+    """Store writes this call's LLM turn failed and never redid successfully.
+
+    Scans the messages after the last ``HumanMessage`` (this call's request; with a
+    checkpointer the list is the whole thread's history). A failed write is cleared
+    only by a later successful write to the same store and primary key -- kept that
+    narrow on purpose, so a success elsewhere can never paper over it.
+    """
+    start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            start = i + 1
+            break
+    calls: dict[str, dict] = {}
+    failed: dict[tuple[str, str | None], str] = {}
+    for message in messages[start:]:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls or []:
+                calls[call.get("id")] = call
+            continue
+        if not isinstance(message, ToolMessage):
+            continue
+        call = calls.get(message.tool_call_id)
+        if call is None or call.get("name") not in _STORE_WRITE_TOOLS:
+            continue
+        args = call.get("args") or {}
+        store_name = str(args.get("store"))
+        if call["name"] == "state_insert":
+            entity = args.get("entity")
+            key = (
+                entity.get(store.primary_key(store_name))
+                if isinstance(entity, dict)
+                else None
+            )
+        else:
+            key = args.get("id")
+        target = (store_name, None if key is None else str(key))
+        try:
+            body = json.loads(message.content)
+        except (TypeError, ValueError):
+            body = None
+        code = body.get("error") if isinstance(body, dict) else None
+        if code in _FAILED_WRITE_ERRORS or message.status == "error":
+            detail = body.get("message") if isinstance(body, dict) else message.content
+            failed[target] = (
+                f"{call['name']} on '{store_name}' id '{target[1]}' returned "
+                f"{code or 'a tool error'}: {detail}"
+            )
+        elif code is None and target[1] is not None:
+            failed.pop(target, None)
+    return list(failed.values())
 
 
 class DeepAgent:
@@ -414,6 +481,25 @@ class DeepAgent:
                 if isinstance(parsed_response, dict) and "error" in parsed_response:
                     if store is not None:
                         store.restore(checkpoint)
+                    return parsed_response
+
+                # Fail closed: a success body over a store write that was rejected and
+                # never redone describes a state change that did not happen.
+                failures = (
+                    _unrecovered_write_failures(messages, store)
+                    if store is not None
+                    else []
+                )
+                if failures:
+                    logger.warning(
+                        f"Store write failed: tool={tool_name}, "
+                        f"failures={failures}, response={response_text[:200]}"
+                    )
+                    store.restore(checkpoint)
+                    return {
+                        "error": "Store write failed",
+                        "details": "; ".join(failures),
+                    }
 
                 return parsed_response
 

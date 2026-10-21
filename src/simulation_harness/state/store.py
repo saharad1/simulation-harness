@@ -77,6 +77,10 @@ class SimulationStore:
         if store not in self._data:
             raise UnknownStoreError(store, list(self._data.keys()))
 
+    def primary_key(self, store: str) -> str:
+        """The primary-key field name ``insert`` reads for ``store``."""
+        return self._primary_keys.get(store, "id")
+
     def get(self, store: str, id: str) -> dict | None:
         """Get an entity by its primary key.
 
@@ -188,7 +192,7 @@ class SimulationStore:
         """
         self._check_store_exists(store)
 
-        pk_field = self._primary_keys.get(store, "id")
+        pk_field = self.primary_key(store)
 
         # Validate primary key is present
         validate_primary_key_present(store, entity, pk_field)

@@ -301,3 +301,137 @@ async def test_different_threads_not_serialized(
 
     assert out_a == {"status": "ok-a"}
     assert out_b == {"status": "ok-b"}
+
+
+# --- a failed store write fails the call --------------------------------------
+#
+# A state tool that rejects a write returns {"error": "validation_error", ...} to the
+# LLM as an ordinary tool result. Nothing stopped the LLM from ignoring it, keeping
+# the turn's other writes and answering with a success body. These fakes run the
+# real state tools, so the ToolMessages are exactly what the agent graph produces.
+
+
+def _run_tool_calls(config: Any, calls: list[tuple[str, dict]], final: str) -> dict:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from simulation_harness.state.tools import create_state_tools
+
+    tools = {t.name: t for t in create_state_tools()}
+    messages: list[Any] = [HumanMessage(content="API Request: POST /x")]
+    for i, (name, args) in enumerate(calls):
+        call = {"type": "tool_call", "name": name, "args": args, "id": f"call_{i}"}
+        messages.append(AIMessage(content="", tool_calls=[call]))
+        messages.append(tools[name].invoke(call, config=config))
+    messages.append(AIMessage(content=final))
+    return {"messages": messages}
+
+
+_GOOD_UPDATE = (
+    "state_update",
+    {
+        "store": "reservations",
+        "id": "reservation_seed_002",
+        "patch": {"status": "cancelled"},
+    },
+)
+_BAD_UPDATE = (
+    "state_update",
+    {"store": "reservations", "id": "reservation_seed_001", "patch": {"status": 123}},
+)
+_BAD_INSERT = ("state_insert", {"store": "reservations", "entity": {"id": "r9"}})
+
+
+async def _call_with(agent: DeepAgent, calls: list[tuple[str, dict]], final: str):
+    async def _ainvoke(_input: Any, config: Any) -> dict:
+        return _run_tool_calls(config, calls, final)
+
+    agent.agent.ainvoke = AsyncMock(side_effect=_ainvoke)
+    return await agent.generate_response(
+        tool_name="exchangeItems",
+        arguments={"id": "reservation_seed_001"},
+        thread_id="default",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [_BAD_INSERT, _BAD_UPDATE])
+async def test_an_ignored_failed_write_fails_the_call_and_rolls_back(
+    mock_spec: Any, mock_operation: Any, bad: tuple[str, dict]
+) -> None:
+    agent = _make_agent(mock_spec, mock_operation)
+    before = agent.store_registry.for_thread("default").snapshot()
+
+    out = await _call_with(agent, [_GOOD_UPDATE, bad], '{"status": "exchanged"}')
+
+    assert set(out) == {"error", "details"}
+    assert "store write failed" in out["error"].lower()
+    assert "validation_error" in out["details"]
+    # The earlier, successful write of the same turn is undone too.
+    assert agent.store_registry.for_thread("default").snapshot() == before
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_retried_successfully_keeps_the_call(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    agent = _make_agent(mock_spec, mock_operation)
+    retry = (
+        "state_update",
+        {
+            "store": "reservations",
+            "id": "reservation_seed_001",
+            "patch": {"status": "cancelled"},
+        },
+    )
+
+    out = await _call_with(agent, [_BAD_UPDATE, retry], '{"status": "exchanged"}')
+
+    assert out == {"status": "exchanged"}
+    store = agent.store_registry.for_thread("default")
+    assert store.get("reservations", "reservation_seed_001")["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_success_on_another_row_does_not_clear_a_failed_write(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    agent = _make_agent(mock_spec, mock_operation)
+    before = agent.store_registry.for_thread("default").snapshot()
+
+    out = await _call_with(agent, [_BAD_UPDATE, _GOOD_UPDATE], '{"ok": true}')
+
+    assert "store write failed" in out["error"].lower()
+    assert agent.store_registry.for_thread("default").snapshot() == before
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_answered_with_an_error_is_returned_as_is(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    agent = _make_agent(mock_spec, mock_operation)
+
+    out = await _call_with(agent, [_BAD_INSERT], '{"error": "cannot book"}')
+
+    assert out == {"error": "cannot book"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_in_an_earlier_call_does_not_fail_this_one(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    """Only this call's messages count: with a checkpointer the history is the thread's."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    agent = _make_agent(mock_spec, mock_operation)
+
+    async def _ainvoke(_input: Any, config: Any) -> dict:
+        earlier = _run_tool_calls(config, [_BAD_INSERT], '{"error": "x"}')["messages"]
+        now = [HumanMessage(content="API Request: GET /y"), AIMessage(content="{}")]
+        return {"messages": earlier + now}
+
+    agent.agent.ainvoke = AsyncMock(side_effect=_ainvoke)
+    out = await agent.generate_response(
+        tool_name="exchangeItems", arguments={}, thread_id="default"
+    )
+
+    assert out == {}

@@ -57,3 +57,11 @@ def test_render_without_raw_spec_is_unchanged_by_the_flag() -> None:
     assert render_system_prompt(_mock_spec()) == render_system_prompt(
         _mock_spec(), raw_spec=None
     )
+
+
+def test_render_says_a_failed_store_write_fails_the_operation() -> None:
+    for result in (
+        render_system_prompt(_mock_spec()),
+        render_system_prompt(_mock_spec(), raw_spec="{}"),
+    ):
+        assert "that write did not happen and the operation failed" in result
