@@ -11,7 +11,11 @@ one JSON line to ``<HARNESS_TRACE_DIR>/trajectory.jsonl`` holding:
   SKILL.md alike) with its arguments, the size of the result the tool produced, the size the
   model was actually shown, whether the FilesystemMiddleware evicted the result to a file
   (results over ~80k chars) or truncated a ``read_file`` page, and its wall time,
-- the final response text, the body returned to the caller, and the call's wall time.
+- the final response text, the body returned to the caller, and the call's wall time,
+- the eval's ``task_id`` / ``run_id`` (its ``X-Task-Id`` / ``X-Run-Id`` MCP request headers,
+  bound per call by the MCP handler through :func:`call_ids`; ``None`` when not sent), and
+  ``fix_fired``: the failure-path fixes that acted on this call (e.g. ``S2_retry``), ``[]``
+  on a call none of them touched.
 
 Pure observation: with the variable unset or empty nothing here is constructed, and with it
 set the only addition to the agent is ``ToolTraceMiddleware``, which returns every tool
@@ -23,6 +27,9 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -46,6 +53,42 @@ READ_TRUNCATED_MARKER = "[Output was truncated due to size limits."
 
 #: How much of each tool result (as the model saw it) the record keeps.
 RESULT_HEAD_CHARS = 1500
+
+#: The MCP request headers the eval sends on every call (its ``McpToolClient``).
+TASK_ID_HEADER = "x-task-id"
+RUN_ID_HEADER = "x-run-id"
+
+# (task_id, run_id) of the MCP request being served. A ContextVar, so concurrent requests
+# never see each other's ids: each MCP request runs in its own task, and the simulated call
+# is awaited inside it.
+_CALL_IDS: ContextVar[tuple[str | None, str | None]] = ContextVar(
+    "harness_call_ids", default=(None, None)
+)
+
+
+def ids_from_headers(
+    headers: Mapping[str, str] | None,
+) -> tuple[str | None, str | None]:
+    """``(task_id, run_id)`` from request headers (case-insensitive); missing -> ``None``."""
+    if not headers:
+        return None, None
+    lowered = {str(k).lower(): v for k, v in headers.items()}
+    return lowered.get(TASK_ID_HEADER) or None, lowered.get(RUN_ID_HEADER) or None
+
+
+@contextmanager
+def call_ids(task_id: str | None, run_id: str | None) -> Iterator[None]:
+    """Bind the eval's task/run id to every simulated call made inside the block."""
+    token = _CALL_IDS.set((task_id, run_id))
+    try:
+        yield
+    finally:
+        _CALL_IDS.reset(token)
+
+
+def current_call_ids() -> tuple[str | None, str | None]:
+    """The ``(task_id, run_id)`` bound by :func:`call_ids`, or ``(None, None)``."""
+    return _CALL_IDS.get()
 
 
 def _text_of(content: Any) -> str:
@@ -205,6 +248,7 @@ class CallTracer:
         response_text: str | None,
         returned: Any,
         outcome: str,
+        fix_fired: list[str] | None = None,
     ) -> None:
         """Append the record for one call. Never raises."""
         try:
@@ -212,11 +256,14 @@ class CallTracer:
                 self._seq += 1
                 seq = self._seq
             calls = tool_calls_of(messages or [], self.middleware)
+            task_id, run_id = current_call_ids()
             record = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "seq": seq,
                 "simulation": self.simulation,
                 "run_label": self.run_label,
+                "task_id": task_id,
+                "run_id": run_id,
                 "thread_id": thread_id,
                 "tool": tool,
                 "arguments": arguments,
@@ -231,6 +278,7 @@ class CallTracer:
                 "tool_calls": calls,
                 "final_response": response_text,
                 "returned": returned,
+                "fix_fired": list(fix_fired or []),
             }
             line = json.dumps(record, ensure_ascii=False, default=str)
             with self._lock:

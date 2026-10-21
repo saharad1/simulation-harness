@@ -293,3 +293,47 @@ async def test_handle_call_tool_execution_failure_includes_structured_reason(
 
 
 # Made with Bob
+
+
+@pytest.mark.asyncio
+async def test_handle_call_tool_binds_task_and_run_id_headers(
+    mock_simulation_instance: MagicMock,
+) -> None:
+    """X-Task-Id / X-Run-Id on the MCP HTTP request are visible to the call (for the trace)."""
+    from types import SimpleNamespace
+
+    from mcp.server.lowlevel.server import request_ctx
+    from mcp.shared.context import RequestContext
+    from starlette.datastructures import Headers
+
+    from simulation_harness.agent.trace import current_call_ids
+
+    seen: list[tuple[str | None, str | None]] = []
+
+    async def execute(name: str, arguments: dict) -> ToolCallResult:
+        seen.append(current_call_ids())
+        return ToolCallResult(success=True, content="{}", error=None)
+
+    mock_simulation_instance.execute_tool.side_effect = execute
+    wrapper = MCPServerWrapper(mock_simulation_instance)
+    request = SimpleNamespace(
+        headers=Headers({"X-Task-Id": "41", "X-Run-Id": "pf-retail.thin.d1.full"})
+    )
+    token = request_ctx.set(
+        RequestContext(
+            request_id=1,
+            meta=None,
+            session=Mock(),
+            lifespan_context=None,
+            request=request,
+        )
+    )
+    try:
+        await wrapper._handle_call_tool("getTest", {})
+    finally:
+        request_ctx.reset(token)
+    # Outside an MCP request (no context): no ids, and the call still runs.
+    await wrapper._handle_call_tool("getTest", {})
+
+    assert seen == [("41", "pf-retail.thin.d1.full"), (None, None)]
+    assert current_call_ids() == (None, None)

@@ -444,6 +444,7 @@ class DeepAgent:
                 response_text=trace.get("response_text"),
                 returned=returned,
                 outcome=trace.get("outcome", "cancelled"),
+                fix_fired=trace.get("fix_fired"),
             )
 
     async def _simulate_call(

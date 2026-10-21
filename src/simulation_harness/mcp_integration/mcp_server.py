@@ -6,6 +6,7 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import Tool, TextContent, CallToolResult
 
+from simulation_harness.agent.trace import call_ids, ids_from_headers
 from simulation_harness.core.simulation_instance import SimulationInstance
 from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.openapi.tool_generator import generate_tool_from_operation
@@ -83,8 +84,10 @@ class MCPServerWrapper:
             MCP CallToolResult with isError flag and content
         """
         try:
-            # Execute tool via simulation instance
-            result = await self.simulation_instance.execute_tool(name, arguments)
+            # Execute tool via simulation instance, with the eval's task/run id bound for
+            # the call's trace record (observational: absent headers bind None).
+            with call_ids(*self._request_ids()):
+                result = await self.simulation_instance.execute_tool(name, arguments)
 
             if result.success:
                 # Return success result
@@ -156,6 +159,18 @@ class MCPServerWrapper:
             logger.error(f"Unexpected error during tool call: {e}", exc_info=True)
             # Re-raise to let MCP SDK handle it properly
             raise
+
+    def _request_ids(self) -> tuple[str | None, str | None]:
+        """``X-Task-Id`` / ``X-Run-Id`` of the HTTP request carrying this MCP call.
+
+        ``(None, None)`` outside a request (direct calls in tests) or on a transport with
+        no HTTP request.
+        """
+        try:
+            request = self.server.request_context.request
+        except LookupError:
+            return None, None
+        return ids_from_headers(getattr(request, "headers", None))
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """Public method to list tools (for testing).

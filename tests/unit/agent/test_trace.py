@@ -249,3 +249,37 @@ def test_empty_trace_dir_is_off() -> None:
         trace_dir="",
     )
     assert agent.tracer is None
+
+
+@pytest.mark.asyncio
+async def test_record_carries_task_and_run_ids(tmp_path: Path) -> None:
+    """The eval's X-Task-Id / X-Run-Id (bound by the MCP handler) land on the record."""
+    from simulation_harness.agent.trace import call_ids
+
+    trace_dir = tmp_path / "trace"
+    agent, fake = _make_agent(trace_dir)
+    try:
+        with call_ids("33", "pf-retail.shipped.d1.full"):
+            await agent.generate_response("getRestaurant", {"id": "rest_001"})
+        # Outside the binding: no ids (a client that sends no headers).
+        fake.cursor = 0
+        await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    first, second = (
+        json.loads(line)
+        for line in (trace_dir / TRACE_FILE_NAME).read_text().splitlines()
+    )
+    assert (first["task_id"], first["run_id"]) == ("33", "pf-retail.shipped.d1.full")
+    assert (second["task_id"], second["run_id"]) == (None, None)
+    # No fix path fired on an ordinary call.
+    assert first["fix_fired"] == [] and second["fix_fired"] == []
+
+
+def test_ids_from_headers_reads_eval_headers() -> None:
+    from simulation_harness.agent.trace import ids_from_headers
+
+    assert ids_from_headers({"x-task-id": "7", "x-run-id": "pf-c"}) == ("7", "pf-c")
+    assert ids_from_headers({"X-Task-Id": "7"}) == ("7", None)
+    assert ids_from_headers({}) == (None, None)
+    assert ids_from_headers(None) == (None, None)
