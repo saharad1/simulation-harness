@@ -21,6 +21,7 @@ from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.utils.errors import (
     SessionExpiredError,
     ConcurrentQueueFullError,
+    StoreDisabledError,
 )
 from simulation_harness.utils.logging import get_logger
 
@@ -29,6 +30,9 @@ logger = get_logger(__name__)
 
 class SimulationInstance:
     """Simulation instance with session management and bounded queue."""
+
+    #: False for `spec_only` (no store). Class-level so a spec'd mock reads the default.
+    state_enabled: bool = True
 
     def __init__(
         self,
@@ -44,6 +48,7 @@ class SimulationInstance:
         skill_dir: Path | None = None,
         agent_recursion_limit: int = 50,
         skill_enabled: bool = True,
+        state_enabled: bool = True,
         mcp_port: int | None = None,
         streaming: bool = True,
     ) -> None:
@@ -63,11 +68,14 @@ class SimulationInstance:
             agent_recursion_limit: Maximum recursion depth for agent
             skill_enabled: Load the compiled skill (the method). False is the `no_skill`
                 ablation: the raw OpenAPI spec goes into the system prompt instead.
+            state_enabled: Build the state store. False (with ``skill_enabled=False``) is the
+                `spec_only` reference: no store, so seeding and snapshots are refused.
             mcp_port: Optional port for a sidecar MCP server on a separate port.
             streaming: Stream chat completions for the agent's LLM. See
                 ``agent.deep_agent.DeepAgent`` for why this defaults on.
         """
         self.spec = spec
+        self.state_enabled = state_enabled
         self.mcp_port: int | None = mcp_port
         self._sidecar = None  # Set by SimulationHost after start
         self._max_messages = max_messages
@@ -103,6 +111,7 @@ class SimulationInstance:
             skill_name=spec.name,
             agent_recursion_limit=agent_recursion_limit,
             skill_enabled=skill_enabled,
+            state_enabled=state_enabled,
             streaming=streaming,
             # Per-call trace of the LLM's state queries and skill reads; off unless set.
             trace_dir=harness_env(TRACE_DIR_ENV) or None,
@@ -280,7 +289,13 @@ class SimulationInstance:
 
         Returns:
             Dictionary mapping store names to lists of entities, or empty dict if no store
+
+        Raises:
+            StoreDisabledError: the store is disabled (`spec_only`). Distinct from the empty
+                dict, which a client would read as an empty world.
         """
+        if not self.state_enabled:
+            raise StoreDisabledError()
         if not hasattr(self, "_agent"):
             return {}
 

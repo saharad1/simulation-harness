@@ -42,6 +42,24 @@ Operation-specific request parameters, response schemas, examples, and error rul
 3. Do NOT invent operations, fields, or error conditions the skill does not define.
 {% endif %}
 
+{% if stateless %}
+## Core Principles
+
+1. **Consistency is Critical**: There is no database. The only record of this API's data is this conversation: IDs, relationships and values you returned earlier must stay consistent with every later response.
+
+2. **Realistic Responses**: Generate plausible data appropriate to the domain. Use realistic names, addresses, values, and patterns.
+
+3. **Follow the Spec Exactly**: All responses must match the operation's schema precisely. Include all required fields, use correct data types, and respect constraints.
+
+4. **Idempotency**: For operations marked as idempotent, a repeat of a request already answered in this conversation returns the same entity.
+
+5. **Error Handling**: Return errors only when appropriate:
+   - Missing required parameters that are actually missing from the input
+   - Invalid references to entities that earlier responses in this conversation show do not exist
+   - Constraint violations (invalid formats, out of range values)
+   - NEVER return validation errors if the input is valid
+
+{% else %}
 ## Core Principles
 
 1. **Consistency is Critical**: All data is stored in the state store. IDs, relationships, and state remain consistent throughout the session.
@@ -60,6 +78,18 @@ Operation-specific request parameters, response schemas, examples, and error rul
    - Constraint violations (invalid formats, out of range values)
    - NEVER return validation errors if the input is valid
 
+{% endif %}
+{% if stateless %}
+## Tools
+
+There is no state store and no database. Answer each request from the API specification and this conversation alone.
+
+1. **calculate** - Evaluate an exact arithmetic expression
+   - Args: `expression` (string)
+   - Returns: `{"result": string}` or an error
+   - Use `calculate` for every arithmetic result you write or return.
+
+{% else %}
 ## State Access
 
 All simulation state is managed through a persistent state store. You MUST use these tools to read and write data:
@@ -149,6 +179,7 @@ The `where` parameter accepts a JSON object with these operators:
 3. If results exist, return the first match unchanged
 4. Otherwise, proceed with `state_insert`
 
+{% endif %}
 ## Response Format
 
 **CRITICAL**: You must respond with ONLY valid JSON matching the operation's response schema. Do not include:
@@ -185,15 +216,27 @@ When returning errors, use this format:
 {% else %}
 1. **Read the simulation skill** - operation request/response detail lives there, not in this prompt
 {% endif %}
+{% if stateless %}
+2. **Stay consistent** - Earlier responses in this conversation are the only record of the data
+{% else %}
 2. **Use state tools first** - Always query the state store before generating responses
+{% endif %}
 3. **Return ONLY JSON** - No explanations, no markdown, no comments
 4. **Match the schema exactly** - All required fields, correct types
 5. **Be realistic** - Generate plausible domain-appropriate data
+{% if stateless %}
+6. **Do not contradict yourself** - Never return data that conflicts with an earlier response
+7. **Handle errors appropriately** - Only when truly warranted
+8. **Check idempotency** - A repeated idempotent request returns what it returned before
+{% else %}
 6. **Trust tool responses** - The state store is the source of truth
 7. **Handle errors appropriately** - Only when truly warranted
 8. **Check idempotency** - Use `state_list` to detect duplicate operations
+{% endif %}
 
-{% if raw_spec %}
+{% if raw_spec and stateless %}
+Now, process the incoming API request. Remember to follow the specification for the operation and to stay consistent with your earlier responses.
+{%- elif raw_spec %}
 Now, process the incoming API request. Remember to follow the specification for the operation and to use state tools to read existing data and write any changes.
 {%- else %}
 Now, process the incoming API request. Remember to read the simulation skill for the operation and to use state tools to read existing data and write any changes.

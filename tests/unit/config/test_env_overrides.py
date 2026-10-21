@@ -357,3 +357,20 @@ class TestAppliedOverrideReporting:
 
 
 # Made with Bob
+
+
+class TestAblationOverrides:
+    def test_spec_only_toggles_apply(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HARNESS_ABLATION_SKILL", "false")
+        monkeypatch.setenv("HARNESS_ABLATION_STATE", "false")
+        out = apply_env_overrides(_base(), env_file=None)
+        assert (out.ablation.skill, out.ablation.state) == (False, False)
+
+    def test_state_off_with_skill_on_refused_at_startup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main.py treats a ValueError here as a failed startup."""
+        monkeypatch.delenv("HARNESS_ABLATION_SKILL", raising=False)
+        monkeypatch.setenv("HARNESS_ABLATION_STATE", "false")
+        with pytest.raises(ValueError, match="HARNESS_ABLATION_STATE=false"):
+            apply_env_overrides(_base(), env_file=None)

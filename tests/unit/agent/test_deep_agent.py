@@ -595,3 +595,121 @@ def test_no_skill_prompt_carries_the_store_layout_and_nothing_else(
     ).system_prompt
     assert full == render_system_prompt(mock_spec)
     assert "Store Layout" not in full and "x-element-ref" not in full
+
+
+def _build_spec_only_agent(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> tuple[DeepAgent, Mock, Mock, Mock]:
+    skill_dir = tmp_path / "petstore"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: petstore\ndescription: Simulate the Pet Store API.\n---\n# SKILL-BODY\n"
+    )
+    (skill_dir / "db.json").write_text('{"pets": []}')
+    mock_spec.spec_dict = {
+        "openapi": "3.0.0",
+        "paths": {"/pets/{petId}": {"get": {"operationId": "getPetByIdMarker"}}},
+    }
+    with (
+        patch("simulation_harness.agent.deep_agent.ChatOpenAI") as mock_chat_openai,
+        patch("simulation_harness.agent.deep_agent.StoreRegistry") as mock_registry,
+        patch(
+            "simulation_harness.agent.deep_agent.create_state_tools", return_value=[]
+        ) as mock_state_tools,
+        patch(
+            "simulation_harness.agent.deep_agent.create_agent",
+            return_value=Mock(),
+        ) as mock_create_agent,
+    ):
+        mock_chat_openai.return_value = Mock()
+        agent = DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+            skill_dir=skill_dir,
+            skill_enabled=False,
+            state_enabled=False,
+        )
+    return agent, mock_registry, mock_state_tools, mock_create_agent
+
+
+def test_spec_only_branch_has_no_store_no_state_tools_and_raw_spec_in_prompt(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """skill_enabled=False, state_enabled=False (the `spec_only` reference): no StoreRegistry,
+    no state tools, no skill staged, and the raw spec in the system prompt exactly as no_skill
+    puts it there."""
+    agent, mock_registry, mock_state_tools, mock_create_agent = _build_spec_only_agent(
+        tmp_path, mock_spec, mock_operation
+    )
+
+    assert agent.store_registry is None
+    mock_registry.assert_not_called()
+    mock_state_tools.assert_not_called()
+    assert agent.session_manager.store_registry is None
+
+    kwargs = mock_create_agent.call_args.kwargs
+    assert "middleware" not in kwargs or not kwargs["middleware"]
+    assert [t.name for t in kwargs["tools"]] == ["calculate"]
+    assert agent._skill_staging_dir is None
+    assert kwargs["system_prompt"] == agent.system_prompt
+    assert "getPetByIdMarker" in agent.system_prompt
+    assert "SKILL-BODY" not in agent.system_prompt
+    assert "state_get" not in agent.system_prompt
+
+
+def test_state_off_with_skill_on_is_refused(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """skill=True, state=False is not a condition: refuse rather than build a skill agent whose
+    contracts point at a store it does not have."""
+    with (
+        patch("simulation_harness.agent.deep_agent.ChatOpenAI", return_value=Mock()),
+        pytest.raises(ValueError, match="state"),
+    ):
+        DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+            skill_dir=tmp_path,
+            skill_enabled=True,
+            state_enabled=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_spec_only_reset_and_shutdown_skip_the_store_cleanly(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    agent, *_ = _build_spec_only_agent(tmp_path, mock_spec, mock_operation)
+    await agent.reset("default")
+    await agent.reset()
+    await agent.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spec_only_generate_response_passes_no_registry(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """A tool call runs with no store in its config and returns the parsed JSON body."""
+    from langchain_core.messages import AIMessage
+
+    agent, *_ = _build_spec_only_agent(tmp_path, mock_spec, mock_operation)
+    agent.agent = Mock()
+    agent.agent.ainvoke = AsyncMock(
+        return_value={"messages": [AIMessage(content='{"id": "u1"}')]}
+    )
+
+    result = await agent.generate_response("getUser", {"id": "u1"})
+
+    assert result == {"id": "u1"}
+    config = agent.agent.ainvoke.await_args.kwargs["config"]
+    assert "store_registry" not in config["configurable"]

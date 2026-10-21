@@ -65,3 +65,46 @@ def test_render_says_a_failed_store_write_fails_the_operation() -> None:
         render_system_prompt(_mock_spec(), raw_spec="{}"),
     ):
         assert "that write did not happen and the operation failed" in result
+
+
+def test_render_stateless_drops_every_state_tool() -> None:
+    """`spec_only`: no store, so the prompt must not tell the simulator to use state tools it
+    does not have. The raw spec and the calculator stay."""
+    result = render_system_prompt(
+        _mock_spec(), raw_spec='{"paths": {"/x": "RAWSPECMARKER"}}', stateless=True
+    )
+    assert "RAWSPECMARKER" in result
+    assert "skill" not in result.lower()
+    for tool in (
+        "state_get",
+        "state_list",
+        "state_count",
+        "state_insert",
+        "state_update",
+        "state_delete",
+    ):
+        assert tool not in result
+    assert "state_" not in result
+    assert "state tools" not in result.lower()
+    assert "calculate" in result
+
+
+def test_render_stateless_keeps_the_raw_spec_section_byte_identical() -> None:
+    """The API Specification section is exactly what `no_skill` gets."""
+    raw = '{"paths": {"/x": "RAWSPECMARKER"}}'
+    with_state = render_system_prompt(_mock_spec(), raw_spec=raw)
+    without = render_system_prompt(_mock_spec(), raw_spec=raw, stateless=True)
+
+    def spec_section(text: str) -> str:
+        start = text.index("## API Specification")
+        return text[start : text.index("```", text.index("```json") + 7) + 3]
+
+    assert spec_section(with_state) == spec_section(without)
+
+
+def test_render_stateless_false_is_unchanged() -> None:
+    """`stateless=False` renders exactly what no_skill always rendered."""
+    raw = '{"paths": {}}'
+    assert render_system_prompt(_mock_spec(), raw_spec=raw) == render_system_prompt(
+        _mock_spec(), raw_spec=raw, stateless=False
+    )

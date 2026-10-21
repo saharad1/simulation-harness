@@ -38,6 +38,7 @@ from simulation_harness.utils.errors import (
     SimulationBusyError,
     SimulationNotFoundError,
     SimulationNotReadyError,
+    StoreDisabledError,
 )
 from simulation_harness.utils.logging import configure_logging, get_logger
 
@@ -541,6 +542,17 @@ async def simulation_busy_exception_handler(
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": str(exc), "queue_depth": exc.queue_depth},
+    )
+
+
+@app.exception_handler(StoreDisabledError)
+async def store_disabled_exception_handler(
+    request: Request, exc: StoreDisabledError
+) -> JSONResponse:
+    """Handle StoreDisabledError (`spec_only` has no store) with 409 Conflict."""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc), "code": exc.code},
     )
 
 
