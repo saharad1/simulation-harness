@@ -1,5 +1,8 @@
 """Tests for simulation API routes."""
 
+import re
+from pathlib import Path
+
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -388,6 +391,28 @@ class TestGetSimulation:
         assert data["session_state"]["queue_depth"] == 0
         assert data["mcp_url"] == "http://testserver/mcp/sse"
         assert "created_at" in data
+
+    async def test_get_simulation_reports_provenance(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        mock_simulation_instance: MagicMock,
+    ) -> None:
+        """The status names the exact skill generation and harness commit it serves, so an
+        evaluation records what produced its numbers instead of a bare skill name."""
+        mock_simulation_instance.skill_dir = Path("/store/tau2-retail_261020-165700")
+        record = SimulationRecord.declare(name="tau2-retail")
+        record.transition(SimulationStatus.INITIALIZING, phase="agent_init")
+        record.mark_ready(mock_simulation_instance)
+        mock_simulation_host.get_record = AsyncMock(return_value=record)
+
+        prov = client.get("/api/v1/simulation").json()["provenance"]
+
+        assert prov["skill_generation"] == "tau2-retail_261020-165700"
+        assert re.fullmatch(r"[0-9a-f]{40}", prov["harness_commit"]), prov
+        assert isinstance(prov["harness_dirty"], bool)
+        for key in ("simulation_model", "request_timeout_seconds", "max_retries"):
+            assert key in prov, prov
 
     async def test_get_simulation_ready_with_mcp_port_returns_sidecar_url(
         self,

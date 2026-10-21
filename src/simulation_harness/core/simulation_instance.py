@@ -61,6 +61,9 @@ class SimulationInstance:
             mcp_port: Optional port for a sidecar MCP server on a separate port.
         """
         self.spec = spec
+        self.skill_dir = (
+            skill_dir  # the generation directory loaded; reported as provenance
+        )
         self.mcp_port: int | None = mcp_port
         self._sidecar = None  # Set by SimulationHost after start
         self._max_messages = max_messages

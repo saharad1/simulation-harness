@@ -1,6 +1,10 @@
 """Simulation management API routes."""
 
+import functools
 import gzip
+import shutil
+import subprocess  # nosec B404 - runs only `git` with fixed arguments to report the commit
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -47,6 +51,59 @@ def _build_mcp_url(request: Request, mcp_port: int | None) -> str:
         return f"{scheme}://{host}:{mcp_port}{mcp_path}"
     base_url = str(request.base_url).rstrip("/")
     return f"{base_url}{mcp_path}"
+
+
+@functools.lru_cache(maxsize=1)
+def _harness_version() -> tuple[str | None, bool | None]:
+    """(commit, dirty) of the checkout this process runs from; (None, None) if not a checkout.
+
+    Read once: the code a process runs cannot change under it, and a status poll must stay cheap.
+    `dirty` ignores untracked files (skills-store, caches), which do not change the code.
+    """
+    here = Path(__file__).resolve().parent
+    git = shutil.which("git")
+    if git is None:
+        return None, None
+    try:
+        commit = subprocess.run(  # nosec B603 - fixed git argv, no user input
+            [git, "-C", str(here), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+        status = subprocess.run(  # nosec B603 - fixed git argv, no user input
+            [git, "-C", str(here), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    return commit, bool(status.strip())
+
+
+def _provenance(record: SimulationRecord) -> dict[str, Any]:
+    commit, dirty = _harness_version()
+    skill_dir = getattr(record.instance, "skill_dir", None) if record.instance else None
+    out: dict[str, Any] = {
+        "skill_generation": Path(skill_dir).name if skill_dir else None,
+        "harness_commit": commit,
+        "harness_dirty": dirty,
+    }
+    try:
+        llm = get_config().llm
+        out.update(
+            simulation_model=llm.simulation_model,
+            request_timeout_seconds=llm.request_timeout_seconds,
+            max_retries=llm.max_retries,
+        )
+    except RuntimeError:
+        out.update(
+            simulation_model=None, request_timeout_seconds=None, max_retries=None
+        )
+    return out
 
 
 def _record_to_response(
@@ -98,6 +155,7 @@ def _record_to_response(
             created_at=record.created_at,
             components=components,
             sampling=sampling,
+            provenance=_provenance(record),
             progress=progress,
             error=error,
         )
@@ -110,6 +168,7 @@ def _record_to_response(
         created_at=record.created_at,
         components=components,
         sampling=sampling,
+        provenance=_provenance(record),
         progress=progress,
         error=error,
     )

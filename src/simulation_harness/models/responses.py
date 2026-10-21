@@ -67,6 +67,15 @@ class SimulationResponse(BaseModel):
         "could not tell a sampled run from a greedy one after the fact. None means the harness "
         "could not read its config, which is reported as unknown rather than assumed to be 0.",
     )
+    provenance: dict[str, Any] = Field(
+        default_factory=dict,
+        description="What produced this simulation's answers: `skill_generation` (the skills-store "
+        "directory loaded, e.g. `tau2-retail_261020-165700`, populated when ready), "
+        "`harness_commit` and `harness_dirty` (this process's git checkout; None when not a "
+        "checkout), and the runtime LLM settings `simulation_model`, `request_timeout_seconds`, "
+        "`max_retries`. Exposed like `components` and `sampling`, so an evaluation records the "
+        "exact skill and code it measured instead of a bare skill name.",
+    )
     progress: ProgressPayload = Field(..., description="Creation progress info")
     error: Optional[ErrorPayload] = Field(
         None, description="Failure details — populated only when status=failed."
