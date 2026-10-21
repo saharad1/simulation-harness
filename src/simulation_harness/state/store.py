@@ -383,14 +383,26 @@ class SimulationStore:
         return True
 
     def _declared(self, store: str, path: str) -> bool:
-        """Whether every segment of ``path`` is a declared ``properties`` entry."""
+        """Whether every segment of ``path`` is a declared ``properties`` entry.
+
+        An object declared open by ``additionalProperties`` (a map such as retail
+        ``Item.options`` or ``payment_methods``) declares any key below it. A bare
+        ``{"type": "object"}`` does not: retail ``User.name`` is one, and ``name.first``
+        against records holding ``name.first_name`` is exactly the S3a bug.
+        """
         node: Any = self._defs.get(store)
         for part in path.split("."):
             node = self._resolve_ref(node)
-            props = node.get("properties") if isinstance(node, dict) else None
-            if not isinstance(props, dict) or part not in props:
+            if not isinstance(node, dict):
                 return False
-            node = props[part]
+            props = node.get("properties")
+            if isinstance(props, dict) and part in props:
+                node = props[part]
+                continue
+            extra = node.get("additionalProperties")
+            if extra is None or extra is False:
+                return False
+            node = extra if isinstance(extra, dict) else {}
         return True
 
     def _resolve_ref(self, node: Any) -> Any:

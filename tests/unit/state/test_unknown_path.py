@@ -179,6 +179,48 @@ def test_sort_on_existing_path_is_unchanged(store: SimulationStore) -> None:
     assert not isinstance(exc.value, UnknownFieldError)
 
 
+def test_key_of_a_declared_map_no_record_has_is_unchanged() -> None:
+    """M2: an object declared open by `additionalProperties` (retail `Item.options`,
+    `payment_methods`, `variants`) is a map: a key no record has is a valid question
+    whose answer is `[]`, as before -- not an unknown field. A bare `{"type": "object"}`
+    (retail `User.name`) is not declared open, so `name.first` stays an error."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/Item"}}},
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "x-primary-key": "item_id",
+                "properties": {
+                    "item_id": {"type": "string"},
+                    "name": {"type": "object"},
+                    "options": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+    seed = {
+        "items": [
+            {
+                "item_id": "i1",
+                "name": {"first_name": "Lamp"},
+                "options": {"color": "red", "size": "S"},
+            }
+        ]
+    }
+    items = SimulationStore(schema, seed, {"items": "item_id"})
+    assert items.list("items", where={"options.material": "glass"}) == []
+    assert items.count("items", where={"options.material": "glass"}) == 0
+    assert [
+        r["item_id"] for r in items.list("items", where={"options.color": "red"})
+    ] == ["i1"]
+    with pytest.raises(UnknownFieldError):
+        items.list("items", where={"name.first": "Lamp"})
+
+
 # --- S3b / E1: an unfiltered state_list too large to show is refused ---------------------
 
 
