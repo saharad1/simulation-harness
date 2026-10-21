@@ -240,19 +240,73 @@ def test_get_tool_by_name(temp_dir: Path, complex_openapi_spec: dict[str, Any]) 
     assert get_tool_by_name(tools, "nonexistent") is None
 
 
-def test_tool_description_includes_http_info(
-    temp_dir: Path, simple_openapi_spec: dict[str, Any]
-) -> None:
-    """Test that tool description includes HTTP method and path."""
+def _one_tool(temp_dir: Path, op: dict[str, Any]) -> dict[str, Any]:
+    """Generate the tool for a spec holding the single operation ``op`` (POST /op)."""
+    spec_dict = {
+        "openapi": "3.0.0",
+        "info": {"title": "Test API", "version": "1.0.0"},
+        "paths": {
+            "/op": {
+                "post": {
+                    "operationId": "op",
+                    "responses": {"200": {"description": "ok"}},
+                    **op,
+                }
+            }
+        },
+    }
     spec_file = temp_dir / "openapi.json"
-    with open(spec_file, "w") as f:
-        json.dump(simple_openapi_spec, f)
-
+    spec_file.write_text(json.dumps(spec_dict))
     spec = load_openapi_spec(spec_file, validate_spec=False)
-    tools = generate_tools_from_spec(spec)
+    return generate_tool_from_operation(spec.operations[0], spec)
 
-    tool = tools[0]
-    assert "GET /users" in tool["description"]
+
+def test_tool_description_is_the_spec_text_verbatim(temp_dir: Path) -> None:
+    """The agent sees the spec's own text, nothing added: no HTTP line, no repeated summary."""
+    long = "Cancel a pending order.\n\nIt cannot be cancelled once processed."
+    tool = _one_tool(
+        temp_dir, {"summary": "Cancel a pending order.", "description": long}
+    )
+    assert (
+        tool["description"] == long
+    )  # summary is the description's first line: not repeated
+    assert "HTTP" not in tool["description"]
+
+
+def test_tool_description_falls_back_to_summary(temp_dir: Path) -> None:
+    assert (
+        _one_tool(temp_dir, {"summary": "List users."})["description"] == "List users."
+    )
+
+
+def test_tool_description_keeps_a_summary_the_description_lacks(temp_dir: Path) -> None:
+    tool = _one_tool(
+        temp_dir, {"summary": "List users.", "description": "Paged, 50 per page."}
+    )
+    assert tool["description"] == "List users.\n\nPaged, 50 per page."
+
+
+def test_tool_input_schema_adds_no_additional_properties(temp_dir: Path) -> None:
+    """The input schema carries only what the spec declares."""
+    body = {
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {"email": {"type": "string"}},
+                    "required": ["email"],
+                }
+            }
+        }
+    }
+    schema = _one_tool(temp_dir, {"summary": "Find.", "requestBody": body})[
+        "inputSchema"
+    ]
+    assert schema == {
+        "type": "object",
+        "properties": {"email": {"type": "string"}},
+        "required": ["email"],
+    }
 
 
 def test_generate_tool_from_operation(

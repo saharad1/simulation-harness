@@ -77,18 +77,14 @@ def _build_tool_description(operation: OpenAPIOperation) -> str:
     Returns:
         Tool description string
     """
-    parts = []
-
-    # Add summary
-    if operation.summary:
-        parts.append(operation.summary)
-
-    # Add description if different from summary
-    if operation.description and operation.description != operation.summary:
-        parts.append(operation.description)
-
-    # Add HTTP method and path
-    parts.append(f"HTTP: {operation.method.upper()} {operation.path}")
+    # The agent sees the spec's own text and nothing else, so a simulated tool reads exactly like
+    # the real one it stands in for. The summary is often the description's first line; it is
+    # added only when the description does not already carry it.
+    summary = (operation.summary or "").strip()
+    description = (operation.description or "").strip()
+    parts = [description] if description else []
+    if summary and not description.startswith(summary):
+        parts.insert(0, summary)
 
     return "\n\n".join(parts)
 
@@ -109,7 +105,6 @@ def _build_input_schema(
         "type": "object",
         "properties": {},
         "required": [],
-        "additionalProperties": True,
     }
 
     # Add parameters to schema
