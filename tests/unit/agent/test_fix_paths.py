@@ -283,52 +283,158 @@ async def test_s2_gives_up_after_two_retries_with_the_old_error(
     assert rec["fix_fired"] == ["S2_retry"]
 
 
-@pytest.mark.asyncio
-async def test_s2_retry_keeps_the_turns_writes_and_their_failure_check(
-    tmp_path: Path,
-) -> None:
-    """The retry continues the same turn: its writes stand, and a write the turn failed
-    still fails the call after a well-formed retry (the B2 check spans the whole turn)."""
-    ok_write = [
-        _call(
-            "w1",
-            "state_update",
-            store="restaurants",
-            id="rest_001",
-            patch={"rating": 4.9},
-        ),
-        AIMessage(content="```json\n{}\n```"),
-        AIMessage(content='{"id": "rest_001", "rating": 4.9}'),
-    ]
-    agent, _ = _agent(tmp_path / "a", ok_write)
+def _rating_update(call_id: str, rating: Any) -> AIMessage:
+    return _call(
+        call_id,
+        "state_update",
+        store="restaurants",
+        id="rest_001",
+        patch={"rating": rating},
+    )
+
+
+async def _run_rest_001(
+    tmp_path: Path, script: list[AIMessage]
+) -> tuple[Any, Any, Any]:
+    """(returned body, rest_001 before, rest_001 after) of one getRestaurant call."""
+    agent, _ = _agent(tmp_path, script)
+    assert agent.store_registry is not None
+    store = agent.store_registry.for_thread("default")
+    before = store.get("restaurants", "rest_001")
     try:
         out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
-        assert agent.store_registry is not None
+        after = agent.store_registry.for_thread("default").get(
+            "restaurants", "rest_001"
+        )
+    finally:
+        await agent.shutdown()
+    return out, before, after
+
+
+@pytest.mark.asyncio
+async def test_s2_retry_is_a_fresh_attempt_and_its_writes_are_checked(
+    tmp_path: Path,
+) -> None:
+    """Each re-ask starts from the pre-call store (I5): only the last attempt's writes
+    stand, and only they are checked by the failed-write (B2) check."""
+    # The re-ask redoes the write: it is applied once.
+    out, _, after = await _run_rest_001(
+        tmp_path / "a",
+        [
+            _rating_update("w1", 4.9),
+            AIMessage(content="```json\n{}\n```"),
+            _rating_update("w2", 4.9),
+            AIMessage(content='{"id": "rest_001", "rating": 4.9}'),
+        ],
+    )
+    assert out == {"id": "rest_001", "rating": 4.9}
+    assert after["rating"] == 4.9
+
+    # A write the re-ask fails still fails the call, and the store is as before it.
+    out, before, after = await _run_rest_001(
+        tmp_path / "b",
+        [
+            _rating_update("w1", 4.9),
+            AIMessage(content="oops"),
+            _rating_update("w2", "not a number"),
+            AIMessage(content='{"id": "rest_001", "rating": 4.9}'),
+        ],
+    )
+    assert out["error"] == "Store write failed"
+    assert after == before
+
+    # A write only the rolled-back attempt failed does not fail the re-ask's answer.
+    out, _, after = await _run_rest_001(
+        tmp_path / "c",
+        [
+            _rating_update("w1", "not a number"),
+            AIMessage(content="oops"),
+            _rating_update("w2", 4.8),
+            AIMessage(content='{"id": "rest_001", "rating": 4.8}'),
+        ],
+    )
+    assert out == {"id": "rest_001", "rating": 4.8}
+    assert after["rating"] == 4.8
+
+
+class _DecrementModel(BaseChatModel):
+    """A non-idempotent write, decided from what it reads: lower rest_001's rating by 0.5.
+
+    Each attempt reads the rating, writes ``rating - 0.5``, then answers. The first
+    attempt's answer is malformed; later ones are valid JSON with the written rating.
+    """
+
+    answers: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "decrement"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "_DecrementModel":
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: Any = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        last = messages[-1]
+        if last.type == "human":
+            message = _call("g", "state_get", store="restaurants", id="rest_001")
+        elif (
+            last.type == "tool"
+            and '"rating"' in str(last.content)
+            and (
+                messages[-2].tool_calls[0]["name"] == "state_get"  # type: ignore[attr-defined]
+            )
+        ):
+            rating = json.loads(str(last.content))["rating"]
+            message = _call(
+                "u",
+                "state_update",
+                store="restaurants",
+                id="rest_001",
+                patch={"rating": round(rating - 0.5, 2)},
+            )
+        else:
+            self.answers += 1
+            rating = json.loads(str(last.content))["rating"]
+            message = AIMessage(
+                content="oops, not JSON"
+                if self.answers == 1
+                else json.dumps({"id": "rest_001", "rating": rating})
+            )
+        # Unique tool-call ids per step, as a real model gives.
+        for call in message.tool_calls:
+            call["id"] = f"{call['id']}{len(messages)}"
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+@pytest.mark.asyncio
+async def test_s2_retry_starts_from_the_pre_call_store(tmp_path: Path) -> None:
+    """I5: the malformed attempt's writes are rolled back before the re-ask, so a
+    non-idempotent write the re-ask redoes is applied once, not twice."""
+    agent, _ = _agent(tmp_path / "t", [])
+    agent.llm = _DecrementModel()  # type: ignore[assignment]
+    agent.agent = agent._create_agent()
+    assert agent.store_registry is not None
+    before = agent.store_registry.for_thread("default").get("restaurants", "rest_001")
+    assert before is not None
+    try:
+        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
         stored = agent.store_registry.for_thread("default").get(
             "restaurants", "rest_001"
         )
     finally:
         await agent.shutdown()
-    assert out == {"id": "rest_001", "rating": 4.9}
-    assert stored is not None and stored["rating"] == 4.9
-
-    failed_write = [
-        _call(
-            "w1",
-            "state_update",
-            store="restaurants",
-            id="rest_001",
-            patch={"rating": "not a number"},
-        ),
-        AIMessage(content="oops"),
-        AIMessage(content='{"id": "rest_001", "rating": 4.9}'),
-    ]
-    agent, _ = _agent(tmp_path / "b", failed_write)
-    try:
-        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
-    finally:
-        await agent.shutdown()
-    assert out["error"] == "Store write failed"
+    once = round(before["rating"] - 0.5, 2)
+    assert out == {"id": "rest_001", "rating": once}
+    assert stored is not None and stored["rating"] == once
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["S2_retry"]
+    assert rec["outcome"] == "ok"
 
 
 @pytest.mark.asyncio

@@ -134,16 +134,18 @@ def _fired(trace: dict[str, Any] | None, fix: str) -> None:
 
 
 def _json_retry_message(
-    operation: OpenAPIOperation, error: json.JSONDecodeError
+    operation: OpenAPIOperation, error: json.JSONDecodeError, request_prompt: str
 ) -> HumanMessage:
-    """S2: re-ask the same turn for its final answer, with the parse error."""
+    """S2: re-ask the request as a fresh attempt (on the restored store), with the parse
+    error."""
     return HumanMessage(
         content=(
-            f"Your previous response was not valid JSON ({error}). Reply again with ONLY "
-            f"the JSON response body for the same request "
-            f"({operation.method.upper()} {operation.path}): a single JSON value, no "
-            f"text before or after it, no markdown. Do not repeat state changes you "
-            f"already made."
+            f"Your previous response was not valid JSON ({error}). It was rolled back: "
+            f"every state change you made for it is undone and the store is as it was "
+            f"before this request. Answer the request again from the start, making "
+            f"again every state change it needs, and reply with ONLY the JSON response "
+            f"body ({operation.method.upper()} {operation.path}): a single JSON value, "
+            f"no text before or after it, no markdown.\n\n{request_prompt}"
         ),
         additional_kwargs={RETRY_KWARG: S2_RETRY},
     )
@@ -152,15 +154,12 @@ def _json_retry_message(
 def _turn_start(messages: list[Any]) -> int:
     """Index just after the HumanMessage that opened this call's current attempt.
 
-    An S2 re-ask continues the same attempt (its writes stand), so its HumanMessage is
-    skipped and the scan reaches back to the request (or to an S4 re-ask, which opens a
-    fresh attempt on a restored store).
+    The request opens the first attempt; each harness re-ask (S2, S4) opens a fresh
+    attempt on the store restored to its pre-call checkpoint, so only the last
+    attempt's writes stand and only they are checked.
     """
     for i in range(len(messages) - 1, -1, -1):
-        message = messages[i]
-        if isinstance(message, HumanMessage) and (
-            message.additional_kwargs.get(RETRY_KWARG) != S2_RETRY
-        ):
+        if isinstance(messages[i], HumanMessage):
             return i + 1
     return 0
 
@@ -168,9 +167,9 @@ def _turn_start(messages: list[Any]) -> int:
 def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
     """Store writes this call's LLM turn failed and never redid successfully.
 
-    Scans the messages after this call's request ``HumanMessage`` (with a checkpointer the
-    list is the whole thread's history; an S2 re-ask continues the same turn, see
-    `_turn_start`). A failed write is cleared only by a later successful write to the same
+    Scans the messages of this call's current attempt (with a checkpointer the list is
+    the whole thread's history; a harness re-ask opens a fresh attempt on the restored
+    store, see `_turn_start`). A failed write is cleared only by a later successful write to the same
     store and primary key -- kept that narrow on purpose, so a success elsewhere can never
     paper over it. A failed write that named no key has no row to match, so the
     narrowest redo there is: a later successful write by the same tool to the same store
@@ -694,9 +693,11 @@ class DeepAgent:
                     f"length={len(response_text)}"
                 )
 
-                # S2: a malformed final answer gets up to JSON_RETRIES re-asks of the same
-                # turn, each with the parse error, before it becomes the error body below.
-                # Failure path only: a first answer that parses is never re-asked.
+                # S2: a malformed final answer gets up to JSON_RETRIES re-asks, each with
+                # the parse error, before it becomes the error body below. Each re-ask is
+                # a fresh attempt on the restored store (as S4's), so a write the
+                # malformed attempt made cannot be applied twice (plan 28 I5). Failure
+                # path only: a first answer that parses is never re-asked.
                 retries_left = JSON_RETRIES
                 while retries_left > 0:
                     try:
@@ -709,8 +710,10 @@ class DeepAgent:
                             f"error={parse_error}, response={response_text[:200]}"
                         )
                         _fired(trace, S2_RETRY)
+                        if store is not None:
+                            store.restore(checkpoint)
                         messages, response_text = await self._invoke(
-                            _json_retry_message(operation, parse_error),
+                            _json_retry_message(operation, parse_error, request_prompt),
                             config,
                             effective_thread_id,
                             trace,
