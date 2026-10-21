@@ -438,6 +438,48 @@ async def test_s2_retry_starts_from_the_pre_call_store(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_s2_call_usage_sums_only_this_calls_turns(tmp_path: Path) -> None:
+    """M7: ``last_call_usage`` of a re-asked call is the sum of ITS turns, even when a
+    call on another thread set the agent-wide field between them."""
+
+    def _ai(content: str, tokens: int) -> AIMessage:
+        return AIMessage(
+            content=content,
+            usage_metadata={
+                "input_tokens": tokens,
+                "output_tokens": 1,
+                "total_tokens": tokens + 1,
+            },
+        )
+
+    foreign = {
+        "input_tokens": 1000,
+        "output_tokens": 1000,
+        "total_tokens": 2000,
+        "cached_input_tokens": 0,
+    }
+    agent, fake = _agent(None, [_ai("not json", 10), _ai(_OK.content, 20)])  # type: ignore[arg-type]
+    real_invoke = agent.agent.ainvoke
+
+    async def _ainvoke(payload: Any, config: Any) -> Any:
+        if fake.cursor == 1:  # another thread's call finished between the two turns
+            agent.last_call_usage = dict(foreign)
+        return await real_invoke(payload, config=config)
+
+    agent.agent.ainvoke = _ainvoke  # type: ignore[method-assign]
+    try:
+        await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    assert agent.last_call_usage == {
+        "input_tokens": 30,
+        "output_tokens": 2,
+        "total_tokens": 32,
+        "cached_input_tokens": 0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_s2_valid_first_answer_is_not_retried(tmp_path: Path) -> None:
     agent, fake = _agent(tmp_path / "t", [_OK, _OK])
     try:

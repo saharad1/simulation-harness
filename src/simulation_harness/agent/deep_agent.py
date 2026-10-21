@@ -703,9 +703,11 @@ class DeepAgent:
             # S4 fix below re-asks once (`request` then becomes the re-ask).
             request = HumanMessage(content=request_prompt)
             section_retried = False
+            # This call's usage, summed over its turns (re-asks included).
+            call_usage: dict[str, int] = {}
             while True:
                 messages, response_text = await self._invoke(
-                    request, config, effective_thread_id, trace
+                    request, config, effective_thread_id, trace, call_usage
                 )
                 logger.debug(
                     f"Raw response: tool={tool_name}, response={response_text[:200]}..., "
@@ -736,6 +738,7 @@ class DeepAgent:
                             config,
                             effective_thread_id,
                             trace,
+                            call_usage,
                         )
 
                 # Try to parse as JSON
@@ -844,6 +847,7 @@ class DeepAgent:
         config: RunnableConfig,
         thread_id: str,
         trace: dict[str, Any] | None,
+        call_usage: dict[str, int],
     ) -> tuple[list[Any], str]:
         """One agent turn on the thread: ``(thread messages, last message's text)``.
 
@@ -851,7 +855,9 @@ class DeepAgent:
         usage is otherwise unrecoverable from outside the process (the tool response
         deliberately carries none). `record` counts only the messages this turn added --
         with a checkpointer, `result["messages"]` is the whole thread history. A call that
-        re-asks (S2/S4) makes several turns; ``last_call_usage`` sums them.
+        re-asks (S2/S4) makes several turns: ``call_usage`` is that call's own running
+        sum (never the agent-wide field, which another thread's call may have set in
+        between), and ``last_call_usage`` is set to it.
         """
         _t0 = time.perf_counter()
         result = await self.agent.ainvoke({"messages": [message]}, config=config)
@@ -862,9 +868,9 @@ class DeepAgent:
             seconds=_llm_seconds,
             model=self._model_name,
         )
-        if message.additional_kwargs.get(RETRY_KWARG) and self.last_call_usage:
-            usage = {k: self.last_call_usage.get(k, 0) + v for k, v in usage.items()}
-        self.last_call_usage = usage
+        for key, value in usage.items():
+            call_usage[key] = call_usage.get(key, 0) + value
+        self.last_call_usage = dict(call_usage)
 
         # Extract the output from the last message
         messages = result.get("messages", [])
