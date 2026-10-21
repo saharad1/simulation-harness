@@ -227,6 +227,34 @@ def _store_layout(skill_dir: Path | None) -> str | None:
     )
 
 
+def build_system_prompt(
+    spec: OpenAPISpec,
+    skill_dir: Path | None,
+    *,
+    skill_enabled: bool,
+    state_enabled: bool,
+) -> str:
+    """The simulator's system prompt for a condition (``scripts/check_prompt_parity.py``).
+
+    `full`/`minimal_skill` (``skill_enabled``): the slim prompt that points at the skill.
+    `no_skill`: the spec itself, unmodified, is the only description of the API -- plus
+    the layout of the store it writes into (schema.json), and nothing else of the skill.
+    Without the layout it could not know the store's composite keys or id-only references,
+    so part of the full-vs-no_skill gap was the missing layout (plan 28 S1). `spec_only`
+    (``state_enabled=False``) additionally drops every state-tool instruction and the store
+    layout: there is no store and no state tool to call.
+    """
+    if skill_enabled:
+        return render_system_prompt(spec)
+    return render_system_prompt(
+        spec,
+        raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False),
+        # The layout is for no_skill only: spec_only has no store to lay out.
+        store_schema=_store_layout(skill_dir) if state_enabled else None,
+        stateless=not state_enabled,
+    )
+
+
 class DeepAgent:
     """Simplified agent for generating mock API responses using LangChain/LangGraph."""
 
@@ -348,23 +376,9 @@ class DeepAgent:
 
         self.llm = ChatOpenAI(**llm_kwargs)
 
-        # Render system prompt
-        # `no_skill`: the spec itself, unmodified, is the only description of the API --
-        # plus the layout of the store it writes into (schema.json), and nothing else of the
-        # skill. Without the layout it could not know the store's composite keys or id-only
-        # references, so part of the full-vs-no_skill gap was the missing layout (plan 28 S1).
-        # `spec_only` additionally drops every state-tool instruction and the store layout:
-        # there is no store and no state tool to call.
-        if skill_enabled:
-            self.system_prompt = render_system_prompt(spec)
-        else:
-            self.system_prompt = render_system_prompt(
-                spec,
-                raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False),
-                # The layout is for no_skill only: spec_only has no store to lay out.
-                store_schema=_store_layout(skill_dir) if state_enabled else None,
-                stateless=not state_enabled,
-            )
+        self.system_prompt = build_system_prompt(
+            spec, skill_dir, skill_enabled=skill_enabled, state_enabled=state_enabled
+        )
 
         logger.debug(
             f"Rendered system prompt: length={len(self.system_prompt)}, "

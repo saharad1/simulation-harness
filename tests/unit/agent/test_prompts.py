@@ -59,12 +59,14 @@ def test_render_without_raw_spec_is_unchanged_by_the_flag() -> None:
     )
 
 
-def test_render_says_a_failed_store_write_fails_the_operation() -> None:
+def test_render_has_no_failed_write_instruction() -> None:
+    """Plan 28 C1: B2 is enforced in code (`_unrecovered_write_failures`), not by a prompt
+    sentence, so the skill-branch prompt stays byte-identical to the one v1 ran with."""
     for result in (
         render_system_prompt(_mock_spec()),
         render_system_prompt(_mock_spec(), raw_spec="{}"),
     ):
-        assert "that write did not happen and the operation failed" in result
+        assert "that write did not happen" not in result
 
 
 def test_render_stateless_drops_every_state_tool() -> None:
