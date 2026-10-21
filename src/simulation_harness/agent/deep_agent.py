@@ -6,6 +6,7 @@ LangChain and LangGraph directly (without the deepagents library).
 
 import asyncio
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -76,6 +77,52 @@ JSON_RETRIES = 2
 #: call (value: the fix's ``fix_fired`` name). Never set on a call's own request.
 RETRY_KWARG = "harness_retry"
 S2_RETRY = "S2_retry"
+
+
+S4_SECTION_RETRY = "S4_section_retry"
+
+#: S4: an error body refusing the operation itself ("unknown operation: x", "Operation not
+#: found", "The operation is not defined ..."), as opposed to a not-found about the data.
+_UNKNOWN_OPERATION = re.compile(
+    r"(?i)\b(?:unknown|unsupported|undefined|unrecogni[sz]ed|invalid)[\s_-]+"
+    r"(?:operation|endpoint)\b"
+    r"|\b(?:operation|endpoint)[\s_-]+(?:is[\s_-]+)?(?:not[\s_-]+"
+    r"(?:found|defined|supported|recogni[sz]ed|available|implemented)"
+    r"|does[\s_-]+not[\s_-]+exist)\b"
+)
+
+
+def _is_unknown_operation(body: dict[str, Any]) -> bool:
+    """Whether an error body is the simulator refusing the operation as undefined."""
+    text = " ".join(
+        str(body[k])
+        for k in ("error", "message", "details", "reason")
+        if isinstance(body.get(k), str)
+    )
+    return bool(_UNKNOWN_OPERATION.search(text))
+
+
+def skill_section(skill_md: str, path: str, method: str) -> tuple[str, int, int] | None:
+    """``(heading, first line, last line)`` of an operation's SKILL.md section, 1-based.
+
+    The heading is the generator's ``### <path> <METHOD>`` (backticks around the path
+    tolerated); the section runs to the line before the next heading of level 1-3.
+    """
+    heading = re.compile(
+        rf"^###\s+`?{re.escape(path)}`?\s+{re.escape(method.upper())}\s*$"
+    )
+    lines = skill_md.splitlines()
+    for i, line in enumerate(lines):
+        if heading.match(line):
+            end = len(lines)
+            for k in range(i + 1, len(lines)):
+                if re.match(r"^#{1,3}\s", lines[k]):
+                    end = k
+                    break
+            while end > i + 1 and not lines[end - 1].strip():
+                end -= 1
+            return line.strip(), i + 1, end
+    return None
 
 
 def _fired(trace: dict[str, Any] | None, fix: str) -> None:
@@ -251,6 +298,10 @@ class DeepAgent:
         # Per-simulation staging dir for the skills backend, created lazily in
         # _create_agent and removed in shutdown().
         self._skill_staging_dir: Path | None = None
+        # The staged SKILL.md (text, and its path as the agent's filesystem tools see it),
+        # when a skill is loaded; used only by the S4 re-ask.
+        self._skill_md: str | None = None
+        self._skill_md_path: str | None = None
 
         # Off unless a trace dir is given; built before the graph, whose middleware it joins.
         self.tracer: CallTracer | None = (
@@ -383,6 +434,14 @@ class DeepAgent:
 
             root_dir, sources = build_skill_sources(self.skill_dir, self.skill_name)
             self._skill_staging_dir = Path(root_dir)
+            staged = sorted(self._skill_staging_dir.glob(".skills/*/SKILL.md"))
+            if staged:
+                # Read once for the S4 fix: where each operation's section is, and the
+                # path the agent's read_file uses for it.
+                self._skill_md = staged[0].read_text(encoding="utf-8")
+                self._skill_md_path = (
+                    "/" + staged[0].relative_to(self._skill_staging_dir).as_posix()
+                )
             backend = FilesystemBackend(root_dir=root_dir, virtual_mode=True)
 
             # Read-only filesystem enforcement: expose only the non-mutating
@@ -567,96 +626,115 @@ class DeepAgent:
             )
             checkpoint = store.checkpoint() if store is not None else None
 
-            # Generate response using agent with session context.
-            # Timed and metered: this await is where every simulated token is spent, and the
-            # usage is otherwise unrecoverable from outside the process (the tool response
-            # deliberately carries none). `record` counts only the messages this call added —
-            # with a checkpointer, `result["messages"]` is the whole thread history.
-            messages, response_text = await self._invoke(
-                HumanMessage(content=request_prompt), config, effective_thread_id, trace
-            )
-            logger.debug(
-                f"Raw response: tool={tool_name}, response={response_text[:200]}..., "
-                f"length={len(response_text)}"
-            )
-
-            # S2: a malformed final answer gets up to JSON_RETRIES re-asks of the same turn,
-            # each with the parse error, before it becomes the error body below. Failure
-            # path only: a first answer that parses never reaches this loop's retry.
-            retries_left = JSON_RETRIES
-            while retries_left > 0:
-                try:
-                    json.loads(response_text)
-                    break
-                except json.JSONDecodeError as parse_error:
-                    retries_left -= 1
-                    logger.warning(
-                        f"JSON parse error, re-asking: tool={tool_name}, "
-                        f"error={parse_error}, response={response_text[:200]}"
-                    )
-                    _fired(trace, S2_RETRY)
-                    messages, response_text = await self._invoke(
-                        _json_retry_message(operation, parse_error),
-                        config,
-                        effective_thread_id,
-                        trace,
-                    )
-
-            # Try to parse as JSON
-            try:
-                parsed_response = json.loads(response_text)
-
+            # Generate response using agent with session context. One attempt, unless the
+            # S4 fix below re-asks once (`request` then becomes the re-ask).
+            request = HumanMessage(content=request_prompt)
+            section_retried = False
+            while True:
+                messages, response_text = await self._invoke(
+                    request, config, effective_thread_id, trace
+                )
                 logger.debug(
-                    f"Parsed response: tool={tool_name}, type={type(parsed_response).__name__}"
+                    f"Raw response: tool={tool_name}, response={response_text[:200]}..., "
+                    f"length={len(response_text)}"
                 )
 
-                if isinstance(parsed_response, dict) and "error" in parsed_response:
+                # S2: a malformed final answer gets up to JSON_RETRIES re-asks of the same
+                # turn, each with the parse error, before it becomes the error body below.
+                # Failure path only: a first answer that parses is never re-asked.
+                retries_left = JSON_RETRIES
+                while retries_left > 0:
+                    try:
+                        json.loads(response_text)
+                        break
+                    except json.JSONDecodeError as parse_error:
+                        retries_left -= 1
+                        logger.warning(
+                            f"JSON parse error, re-asking: tool={tool_name}, "
+                            f"error={parse_error}, response={response_text[:200]}"
+                        )
+                        _fired(trace, S2_RETRY)
+                        messages, response_text = await self._invoke(
+                            _json_retry_message(operation, parse_error),
+                            config,
+                            effective_thread_id,
+                            trace,
+                        )
+
+                # Try to parse as JSON
+                try:
+                    parsed_response = json.loads(response_text)
+
+                    logger.debug(
+                        f"Parsed response: tool={tool_name}, type={type(parsed_response).__name__}"
+                    )
+
+                    if isinstance(parsed_response, dict) and "error" in parsed_response:
+                        if store is not None:
+                            store.restore(checkpoint)
+                        # S4: a refusal of an operation SKILL.md does define gets one
+                        # fresh attempt (on the restored store), pointed at its section.
+                        retry = (
+                            None
+                            if section_retried
+                            else self._section_retry_message(
+                                operation, request_prompt, parsed_response
+                            )
+                        )
+                        if retry is not None:
+                            section_retried = True
+                            logger.warning(
+                                f"Refusal of a defined operation, re-asking with its "
+                                f"SKILL.md section: tool={tool_name}, "
+                                f"response={response_text[:200]}"
+                            )
+                            _fired(trace, S4_SECTION_RETRY)
+                            request = retry
+                            continue
+                        if trace is not None:
+                            trace["outcome"] = "error_body"
+                        return parsed_response
+
+                    # Fail closed: a success body over a store write that was rejected
+                    # and never redone describes a state change that did not happen.
+                    failures = (
+                        _unrecovered_write_failures(messages, store)
+                        if store is not None
+                        else []
+                    )
+                    if failures:
+                        logger.warning(
+                            f"Store write failed: tool={tool_name}, "
+                            f"failures={failures}, response={response_text[:200]}"
+                        )
+                        store.restore(checkpoint)
+                        if trace is not None:
+                            trace["outcome"] = "write_failed"
+                        return {
+                            "error": "Store write failed",
+                            "details": "; ".join(failures),
+                        }
+
+                    if trace is not None:
+                        trace["outcome"] = "ok"
+                    return parsed_response
+
+                except json.JSONDecodeError as e:
+                    logger.error(
+                        f"JSON parse error: tool={tool_name}, response={response_text[:500]}, "
+                        f"error={str(e)}"
+                    )
+
                     if store is not None:
                         store.restore(checkpoint)
                     if trace is not None:
-                        trace["outcome"] = "error_body"
-                    return parsed_response
+                        trace["outcome"] = "json_error"
 
-                # Fail closed: a success body over a store write that was rejected and
-                # never redone describes a state change that did not happen.
-                failures = (
-                    _unrecovered_write_failures(messages, store)
-                    if store is not None
-                    else []
-                )
-                if failures:
-                    logger.warning(
-                        f"Store write failed: tool={tool_name}, "
-                        f"failures={failures}, response={response_text[:200]}"
-                    )
-                    store.restore(checkpoint)
-                    if trace is not None:
-                        trace["outcome"] = "write_failed"
+                    # Return error response
                     return {
-                        "error": "Store write failed",
-                        "details": "; ".join(failures),
+                        "error": "Failed to generate valid JSON response",
+                        "details": str(e),
                     }
-
-                if trace is not None:
-                    trace["outcome"] = "ok"
-                return parsed_response
-
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"JSON parse error: tool={tool_name}, response={response_text[:500]}, "
-                    f"error={str(e)}"
-                )
-
-                if store is not None:
-                    store.restore(checkpoint)
-                if trace is not None:
-                    trace["outcome"] = "json_error"
-
-                # Return error response
-                return {
-                    "error": "Failed to generate valid JSON response",
-                    "details": str(e),
-                }
 
         except Exception as e:
             logger.error(
@@ -727,6 +805,37 @@ class DeepAgent:
         if trace is not None:
             trace["response_text"] = response_text
         return messages, response_text
+
+    def _section_retry_message(
+        self,
+        operation: OpenAPIOperation,
+        request_prompt: str,
+        body: dict[str, Any],
+    ) -> HumanMessage | None:
+        """S4: the re-ask for a refusal of an operation SKILL.md defines, else None.
+
+        In v1 the simulator read SKILL.md's first 1,000 lines, did not see an operation
+        specified further down (retail ``modify_user_address`` at line 1654), and refused
+        it as undefined without looking. Only when the body is such a refusal AND the
+        loaded skill has the operation's section: an operation the skill lacks, any other
+        error, and a condition without a skill keep their answer.
+        """
+        if self._skill_md is None or not _is_unknown_operation(body):
+            return None
+        found = skill_section(self._skill_md, operation.path, operation.method)
+        if found is None:
+            return None
+        heading, first, last = found
+        return HumanMessage(
+            content=(
+                f"The operation {operation.operation_id} IS defined by the simulation "
+                f"skill: {self._skill_md_path}, section `{heading}`, lines {first}-{last} "
+                f"(read_file offset={first - 1}, limit={last - first + 1}). Your previous "
+                f"answer was rolled back. Read that section, then answer the request again "
+                f"following it.\n\n{request_prompt}"
+            ),
+            additional_kwargs={RETRY_KWARG: S4_SECTION_RETRY},
+        )
 
     def _find_operation(self, tool_name: str) -> OpenAPIOperation | None:
         """Find operation by tool name.

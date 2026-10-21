@@ -341,3 +341,165 @@ async def test_s2_valid_first_answer_is_not_retried(tmp_path: Path) -> None:
     assert fake.cursor == 1
     (rec,) = _records(tmp_path / "t")
     assert rec["fix_fired"] == []
+
+
+# --- S4: "Unknown operation" for an operation the skill defines ---------------------------
+
+# tests/fixtures/restaurant-reservation-api/SKILL.md: "### `/place_reservation` POST" is at
+# line 208, its last non-blank line is 259, and the next section starts at line 261.
+_PLACE = "place_reservation"
+
+
+def _place_op() -> Any:
+    op = _operation(_PLACE)
+    op.method = "post"
+    op.path = "/place_reservation"
+    return op
+
+
+def _missing_op() -> Any:
+    op = _operation("rate_restaurant")
+    op.method = "post"
+    op.path = "/rate_restaurant"
+    return op
+
+
+_REFUSAL = AIMessage(content='{"error": "unknown operation: place_reservation"}')
+_PLACED = AIMessage(content='{"reservation_id": "res_1", "status": "confirmed"}')
+
+
+@pytest.mark.asyncio
+async def test_s4_refusal_of_a_defined_operation_is_retried_with_its_section(
+    tmp_path: Path,
+) -> None:
+    script = [
+        # First attempt writes, then refuses: the refusal rolls the write back.
+        _call(
+            "w1",
+            "state_update",
+            store="restaurants",
+            id="rest_001",
+            patch={"rating": 1.0},
+        ),
+        _REFUSAL,
+        _call(
+            "r1",
+            "read_file",
+            file_path="/.skills/restaurant-reservation-api/SKILL.md",
+            offset=207,
+            limit=53,
+        ),
+        _PLACED,
+    ]
+    agent, fake = _agent(tmp_path / "t", script, operations=[_place_op()])
+    try:
+        out = await agent.generate_response(_PLACE, {"restaurant_id": "rest_001"})
+        assert agent.store_registry is not None
+        stored = agent.store_registry.for_thread("default").get(
+            "restaurants", "rest_001"
+        )
+    finally:
+        await agent.shutdown()
+    assert out == {"reservation_id": "res_1", "status": "confirmed"}
+    assert (
+        stored is not None and stored["rating"] != 1.0
+    )  # the refused attempt's write is undone
+    retry = fake.seen[2][-1]
+    assert retry["type"] == "human"
+    assert "### `/place_reservation` POST" in retry["content"]
+    assert "lines 208-259" in retry["content"]
+    assert "offset=207, limit=52" in retry["content"]
+    assert "/.skills/restaurant-reservation-api/SKILL.md" in retry["content"]
+    assert '"restaurant_id": "rest_001"' in retry["content"]  # the request, again
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["S4_section_retry"]
+    assert rec["outcome"] == "ok"
+    assert [c["name"] for c in rec["tool_calls"]] == ["state_update", "read_file"]
+
+
+@pytest.mark.asyncio
+async def test_s4_retries_once_only(tmp_path: Path) -> None:
+    agent, fake = _agent(
+        tmp_path / "t", [_REFUSAL, _REFUSAL, _PLACED], operations=[_place_op()]
+    )
+    try:
+        out = await agent.generate_response(_PLACE, {})
+    finally:
+        await agent.shutdown()
+    assert out == {"error": "unknown operation: place_reservation"}
+    assert fake.cursor == 2
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["S4_section_retry"]
+    assert rec["outcome"] == "error_body"
+
+
+@pytest.mark.asyncio
+async def test_s4_operation_the_skill_lacks_is_not_retried(tmp_path: Path) -> None:
+    refusal = AIMessage(content='{"error": "Operation not found"}')
+    agent, fake = _agent(tmp_path / "t", [refusal, _OK], operations=[_missing_op()])
+    try:
+        out = await agent.generate_response("rate_restaurant", {})
+    finally:
+        await agent.shutdown()
+    assert out == {"error": "Operation not found"}
+    assert fake.cursor == 1
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == []
+
+
+@pytest.mark.asyncio
+async def test_s4_other_errors_and_no_skill_are_not_retried(tmp_path: Path) -> None:
+    other = AIMessage(content='{"error": "Restaurant not found"}')
+    agent, fake = _agent(tmp_path / "a", [other, _PLACED], operations=[_place_op()])
+    try:
+        assert await agent.generate_response(_PLACE, {}) == {
+            "error": "Restaurant not found"
+        }
+    finally:
+        await agent.shutdown()
+    assert fake.cursor == 1
+
+    # no_skill has no skill to point at: its refusal stands.
+    agent, fake = _agent(
+        tmp_path / "b",
+        [_REFUSAL, _PLACED],
+        operations=[_place_op()],
+        skill_enabled=False,
+    )
+    try:
+        out = await agent.generate_response(_PLACE, {})
+    finally:
+        await agent.shutdown()
+    assert out == {"error": "unknown operation: place_reservation"}
+    assert fake.cursor == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "unknown operation: modify_user_address"},
+        {"error": "Operation not found"},
+        {"error": "Unknown operation"},
+        {"error": "unsupported_operation", "message": "x"},
+        {"error": "not_found", "message": "The operation is not defined in the skill"},
+    ],
+)
+def test_s4_refusal_texts(body: dict) -> None:
+    from simulation_harness.agent.deep_agent import _is_unknown_operation
+
+    assert _is_unknown_operation(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "Order not found"},
+        {"error": "User not found"},
+        {"error": "Failed to generate valid JSON response"},
+        {"error": "Payment method not found for this operation"},
+    ],
+)
+def test_s4_ordinary_errors_are_not_refusals(body: dict) -> None:
+    from simulation_harness.agent.deep_agent import _is_unknown_operation
+
+    assert not _is_unknown_operation(body)
