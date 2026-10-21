@@ -68,19 +68,66 @@ _STORE_WRITE_TOOLS = frozenset({"state_insert", "state_update", "state_delete"})
 _FAILED_WRITE_ERRORS = frozenset({"validation_error", "internal_error"})
 
 
+#: S2: how many times a malformed (non-JSON) final answer is re-asked before the call
+#: answers "Failed to generate valid JSON response".
+JSON_RETRIES = 2
+
+#: ``additional_kwargs`` key marking a HumanMessage the harness added to re-ask within a
+#: call (value: the fix's ``fix_fired`` name). Never set on a call's own request.
+RETRY_KWARG = "harness_retry"
+S2_RETRY = "S2_retry"
+
+
+def _fired(trace: dict[str, Any] | None, fix: str) -> None:
+    """Record that failure-path fix ``fix`` acted on this call (trace record only)."""
+    if trace is not None:
+        fired = trace.setdefault("fix_fired", [])
+        if fix not in fired:
+            fired.append(fix)
+
+
+def _json_retry_message(
+    operation: OpenAPIOperation, error: json.JSONDecodeError
+) -> HumanMessage:
+    """S2: re-ask the same turn for its final answer, with the parse error."""
+    return HumanMessage(
+        content=(
+            f"Your previous response was not valid JSON ({error}). Reply again with ONLY "
+            f"the JSON response body for the same request "
+            f"({operation.method.upper()} {operation.path}): a single JSON value, no "
+            f"text before or after it, no markdown. Do not repeat state changes you "
+            f"already made."
+        ),
+        additional_kwargs={RETRY_KWARG: S2_RETRY},
+    )
+
+
+def _turn_start(messages: list[Any]) -> int:
+    """Index just after the HumanMessage that opened this call's current attempt.
+
+    An S2 re-ask continues the same attempt (its writes stand), so its HumanMessage is
+    skipped and the scan reaches back to the request (or to an S4 re-ask, which opens a
+    fresh attempt on a restored store).
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        message = messages[i]
+        if isinstance(message, HumanMessage) and (
+            message.additional_kwargs.get(RETRY_KWARG) != S2_RETRY
+        ):
+            return i + 1
+    return 0
+
+
 def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
     """Store writes this call's LLM turn failed and never redid successfully.
 
-    Scans the messages after the last ``HumanMessage`` (this call's request; with a
-    checkpointer the list is the whole thread's history). A failed write is cleared
-    only by a later successful write to the same store and primary key -- kept that
-    narrow on purpose, so a success elsewhere can never paper over it.
+    Scans the messages after this call's request ``HumanMessage`` (with a checkpointer the
+    list is the whole thread's history; an S2 re-ask continues the same turn, see
+    `_turn_start`). A failed write is cleared only by a later successful write to the same
+    store and primary key -- kept that narrow on purpose, so a success elsewhere can never
+    paper over it.
     """
-    start = 0
-    for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage):
-            start = i + 1
-            break
+    start = _turn_start(messages)
     calls: dict[str, dict] = {}
     failed: dict[tuple[str, str | None], str] = {}
     for message in messages[start:]:
@@ -525,39 +572,35 @@ class DeepAgent:
             # usage is otherwise unrecoverable from outside the process (the tool response
             # deliberately carries none). `record` counts only the messages this call added —
             # with a checkpointer, `result["messages"]` is the whole thread history.
-            _t0 = time.perf_counter()
-            result = await self.agent.ainvoke(
-                {"messages": [HumanMessage(content=request_prompt)]},
-                config=config,
+            messages, response_text = await self._invoke(
+                HumanMessage(content=request_prompt), config, effective_thread_id, trace
             )
-            _llm_seconds = time.perf_counter() - _t0
-            self.last_call_usage = self.usage.record(
-                result.get("messages") if isinstance(result, dict) else None,
-                thread_id=effective_thread_id,
-                seconds=_llm_seconds,
-                model=self._model_name,
-            )
-
-            # Extract the output from the last message
-            messages = result.get("messages", [])
-            if trace is not None:
-                trace["messages"] = messages
-            if not messages:
-                raise ValueError("No response from agent")
-
-            last_message = messages[-1]
-            response_text = (
-                last_message.content
-                if hasattr(last_message, "content")
-                else str(last_message)
-            )
-
             logger.debug(
                 f"Raw response: tool={tool_name}, response={response_text[:200]}..., "
                 f"length={len(response_text)}"
             )
-            if trace is not None:
-                trace["response_text"] = response_text
+
+            # S2: a malformed final answer gets up to JSON_RETRIES re-asks of the same turn,
+            # each with the parse error, before it becomes the error body below. Failure
+            # path only: a first answer that parses never reaches this loop's retry.
+            retries_left = JSON_RETRIES
+            while retries_left > 0:
+                try:
+                    json.loads(response_text)
+                    break
+                except json.JSONDecodeError as parse_error:
+                    retries_left -= 1
+                    logger.warning(
+                        f"JSON parse error, re-asking: tool={tool_name}, "
+                        f"error={parse_error}, response={response_text[:200]}"
+                    )
+                    _fired(trace, S2_RETRY)
+                    messages, response_text = await self._invoke(
+                        _json_retry_message(operation, parse_error),
+                        config,
+                        effective_thread_id,
+                        trace,
+                    )
 
             # Try to parse as JSON
             try:
@@ -639,6 +682,51 @@ class DeepAgent:
             if store is not None:
                 store.restore(checkpoint)
             raise
+
+    async def _invoke(
+        self,
+        message: HumanMessage,
+        config: RunnableConfig,
+        thread_id: str,
+        trace: dict[str, Any] | None,
+    ) -> tuple[list[Any], str]:
+        """One agent turn on the thread: ``(thread messages, last message's text)``.
+
+        Timed and metered: this await is where every simulated token is spent, and the
+        usage is otherwise unrecoverable from outside the process (the tool response
+        deliberately carries none). `record` counts only the messages this turn added --
+        with a checkpointer, `result["messages"]` is the whole thread history. A call that
+        re-asks (S2/S4) makes several turns; ``last_call_usage`` sums them.
+        """
+        _t0 = time.perf_counter()
+        result = await self.agent.ainvoke({"messages": [message]}, config=config)
+        _llm_seconds = time.perf_counter() - _t0
+        usage = self.usage.record(
+            result.get("messages") if isinstance(result, dict) else None,
+            thread_id=thread_id,
+            seconds=_llm_seconds,
+            model=self._model_name,
+        )
+        if message.additional_kwargs.get(RETRY_KWARG) and self.last_call_usage:
+            usage = {k: self.last_call_usage.get(k, 0) + v for k, v in usage.items()}
+        self.last_call_usage = usage
+
+        # Extract the output from the last message
+        messages = result.get("messages", [])
+        if trace is not None:
+            trace["messages"] = messages
+        if not messages:
+            raise ValueError("No response from agent")
+
+        last_message = messages[-1]
+        response_text = (
+            last_message.content
+            if hasattr(last_message, "content")
+            else str(last_message)
+        )
+        if trace is not None:
+            trace["response_text"] = response_text
+        return messages, response_text
 
     def _find_operation(self, tool_name: str) -> OpenAPIOperation | None:
         """Find operation by tool name.

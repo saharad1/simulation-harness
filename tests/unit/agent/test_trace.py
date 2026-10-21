@@ -229,7 +229,8 @@ async def test_trace_record_fields(tmp_path: Path) -> None:
 async def test_error_outcome_is_traced(tmp_path: Path) -> None:
     trace_dir = tmp_path / "trace"
     agent, fake = _make_agent(trace_dir)
-    fake.script = [AIMessage(content="not json")]
+    # Malformed three times: the first answer and both S2 re-asks.
+    fake.script = [AIMessage(content="not json")] * 3
     try:
         out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
     finally:
@@ -240,6 +241,7 @@ async def test_error_outcome_is_traced(tmp_path: Path) -> None:
     assert rec["final_response"] == "not json"
     assert rec["returned"] == out
     assert rec["tool_calls"] == []
+    assert rec["fix_fired"] == ["S2_retry"]
 
 
 def test_empty_trace_dir_is_off() -> None:

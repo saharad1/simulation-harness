@@ -158,10 +158,22 @@ class ToolTraceMiddleware(AgentMiddleware):
         return result
 
 
+#: ``additional_kwargs`` key on a HumanMessage the harness added to re-ask within a call
+#: (``agent.deep_agent.RETRY_KWARG``): part of the call, not the start of a new one.
+_RETRY_KWARG = "harness_retry"
+
+
 def _this_call(messages: list[Any]) -> list[Any]:
-    """The messages this call added: everything after the last ``HumanMessage``."""
+    """The messages this call added: everything after its request ``HumanMessage``.
+
+    Re-asks the harness made within the call (S2/S4) are skipped over, so a call that was
+    re-asked is still recorded from its request on.
+    """
     for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage):
+        message = messages[i]
+        if isinstance(message, HumanMessage) and not message.additional_kwargs.get(
+            _RETRY_KWARG
+        ):
             return list(messages[i + 1 :])
     return list(messages)
 

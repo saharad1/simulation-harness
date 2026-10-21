@@ -233,3 +233,111 @@ async def test_e1_filtered_oversized_list_is_still_evicted_as_before(
     (rec,) = _records(tmp_path / "t")
     assert rec["fix_fired"] == []
     assert rec["tool_calls"][0]["evicted"] is True
+
+
+# --- S2: malformed JSON final answer --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_s2_malformed_answer_is_retried_with_the_parse_error(
+    tmp_path: Path,
+) -> None:
+    script = [
+        _call("c1", "state_get", store="restaurants", id="rest_001"),
+        AIMessage(content='{"id": "rest_001"}{"id": "rest_001"}'),  # "Extra data"
+        _OK,
+    ]
+    agent, fake = _agent(tmp_path / "t", script)
+    try:
+        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    assert out == {"id": "rest_001", "name": "The Italian Corner"}
+    assert fake.cursor == 3
+    retry_prompt = fake.seen[2][-1]
+    assert retry_prompt["type"] == "human"
+    assert "not valid JSON" in retry_prompt["content"]
+    assert "Extra data" in retry_prompt["content"]
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["S2_retry"]
+    assert rec["outcome"] == "ok"
+    # The record still covers the whole call, from the original request on.
+    assert [c["name"] for c in rec["tool_calls"]] == ["state_get"]
+    assert rec["n_llm_steps"] == 3
+
+
+@pytest.mark.asyncio
+async def test_s2_gives_up_after_two_retries_with_the_old_error(
+    tmp_path: Path,
+) -> None:
+    script = [AIMessage(content="not json")] * 3
+    agent, fake = _agent(tmp_path / "t", script)
+    try:
+        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    assert out["error"] == "Failed to generate valid JSON response"
+    assert fake.cursor == 3  # first answer + 2 retries
+    (rec,) = _records(tmp_path / "t")
+    assert rec["outcome"] == "json_error"
+    assert rec["fix_fired"] == ["S2_retry"]
+
+
+@pytest.mark.asyncio
+async def test_s2_retry_keeps_the_turns_writes_and_their_failure_check(
+    tmp_path: Path,
+) -> None:
+    """The retry continues the same turn: its writes stand, and a write the turn failed
+    still fails the call after a well-formed retry (the B2 check spans the whole turn)."""
+    ok_write = [
+        _call(
+            "w1",
+            "state_update",
+            store="restaurants",
+            id="rest_001",
+            patch={"rating": 4.9},
+        ),
+        AIMessage(content="```json\n{}\n```"),
+        AIMessage(content='{"id": "rest_001", "rating": 4.9}'),
+    ]
+    agent, _ = _agent(tmp_path / "a", ok_write)
+    try:
+        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
+        assert agent.store_registry is not None
+        stored = agent.store_registry.for_thread("default").get(
+            "restaurants", "rest_001"
+        )
+    finally:
+        await agent.shutdown()
+    assert out == {"id": "rest_001", "rating": 4.9}
+    assert stored is not None and stored["rating"] == 4.9
+
+    failed_write = [
+        _call(
+            "w1",
+            "state_update",
+            store="restaurants",
+            id="rest_001",
+            patch={"rating": "not a number"},
+        ),
+        AIMessage(content="oops"),
+        AIMessage(content='{"id": "rest_001", "rating": 4.9}'),
+    ]
+    agent, _ = _agent(tmp_path / "b", failed_write)
+    try:
+        out = await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    assert out["error"] == "Store write failed"
+
+
+@pytest.mark.asyncio
+async def test_s2_valid_first_answer_is_not_retried(tmp_path: Path) -> None:
+    agent, fake = _agent(tmp_path / "t", [_OK, _OK])
+    try:
+        await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    assert fake.cursor == 1
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == []
