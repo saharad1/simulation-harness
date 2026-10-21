@@ -122,3 +122,12 @@ def test_validate_bundle_rejects_a_schema_that_drifted_from_the_ir() -> None:
     schema["$defs"]["G"] = {"type": "object", "properties": {}}
     errs = A.validate_bundle(ir, md, schema, {"features": [{"id": "f1"}]})
     assert any("ghosts" in e for e in errs)
+
+
+def test_validate_bundle_rejects_skill_text_the_schema_forbids() -> None:
+    """Plan 28 B3: SKILL.md must not demand a value or field schema.json forbids."""
+    ir = _ir()
+    section = "### /features/{id} GET\n- **Write**\n  - Set `features[id].rank` = `1`\n"
+    md = A.assemble_skill(ir, A.render_preamble(ir, []), [section])
+    errs = A.validate_bundle(ir, md, SCHEMA, {"features": [{"id": "f1"}]})
+    assert any("`features[id].rank`" in e for e in errs)

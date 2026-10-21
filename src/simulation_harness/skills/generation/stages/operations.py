@@ -14,6 +14,10 @@ except ImportError:  # pragma: no cover
 
 from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.skills.generation.ir import Entity, Operation, SpecModel
+from simulation_harness.skills.generation.lint import (
+    id_only_element_writes,
+    id_only_refs_from_ir,
+)
 from simulation_harness.skills.generation.llm import call_text
 from simulation_harness.skills.generation.repair import with_repair
 
@@ -308,6 +312,9 @@ async def generate_section(
     )
     required_headers = [section_header(op) for op in chunk]
     request_fields = {section_header(op): request_field_names(spec, op) for op in chunk}
+    # B3: element shapes are fixed in the IR, so a rule writing fields onto bare-id
+    # elements can be caught here, before the schema stage makes them strings.
+    id_only_refs = id_only_refs_from_ir(ir)
 
     async def produce(feedback):
         user = base_user + (
@@ -323,6 +330,7 @@ async def generate_section(
         ]
         errors.extend(unknown_store_references(section, ir.store_metadata.collections))
         errors.extend(undefined_input_requirements(section, request_fields))
+        errors.extend(id_only_element_writes(section, id_only_refs))
         return errors
 
     return await with_repair(produce, validate, stage="operations", retries=retries)

@@ -10,6 +10,7 @@ except ImportError:  # pragma: no cover
 from jinja2 import Template
 
 from simulation_harness.skills.generation.ir import SpecModel
+from simulation_harness.skills.generation.lint import lint_skill
 from simulation_harness.skills.generation.naming import _force_skill_name
 from simulation_harness.skills.generation.stages.consistency import (
     check_consistency,
@@ -56,4 +57,6 @@ def validate_bundle(ir: SpecModel, skill_md: str, schema: dict, db: dict) -> lis
     errors.extend(validate_schema_and_db(schema, db))
     errors.extend(validate_schema(schema, ir))
     errors.extend(check_consistency(ir, skill_md))
+    # Plan 28 B3: the whole SKILL.md (preamble rules included) against the final schema.
+    errors.extend(lint_skill(skill_md, schema))
     return errors
