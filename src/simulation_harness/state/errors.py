@@ -89,4 +89,24 @@ class BadQueryError(StoreError):
         super().__init__(f"Bad query: {message}")
 
 
+class UnknownFieldError(BadQueryError):
+    """A ``where``/sort path that exists in no record of a non-empty store.
+
+    Such a path can only ever match nothing, so a silent ``[]`` reads as "no such record"
+    when the query itself is wrong (plan 28 S3a: ``name.first`` for ``name.first_name``).
+    Carries the store's real field paths so the caller can correct the query.
+    """
+
+    def __init__(self, store: str, paths: list[str], fields: list[str], more: int = 0):
+        self.store = store
+        self.paths = list(paths)
+        self.fields = list(fields)
+        listed = ", ".join(fields) + (f", ... (+{more} more)" if more else "")
+        unknown = ", ".join(f"'{p}'" for p in paths)
+        super().__init__(
+            f"unknown field {unknown} in store '{store}': no record has it, so the query "
+            f"can only match nothing. Use the store's field paths: {listed}"
+        )
+
+
 # Made with Bob

@@ -1,5 +1,6 @@
 """In-memory state store for simulation sessions."""
 
+import builtins
 import copy
 from typing import Any
 
@@ -8,8 +9,14 @@ from .errors import (
     DuplicateKeyError,
     UnknownStoreError,
     BadQueryError,
+    UnknownFieldError,
 )
 from .validator import validate_entity, validate_primary_key_present
+
+#: How many of a store's field paths an UnknownFieldError lists (most common first).
+MAX_LISTED_FIELDS = 60
+#: How deep into nested objects field paths are collected.
+_MAX_PATH_DEPTH = 4
 
 
 class SimulationStore:
@@ -121,6 +128,15 @@ class SimulationStore:
             BadQueryError: If where clause or sort is malformed
         """
         self._check_store_exists(store)
+        self._check_paths(
+            store,
+            [
+                path
+                for path, predicate in (where or {}).items()
+                if not (isinstance(predicate, dict) and "$exists" in predicate)
+            ]
+            + [field_path for field_path, _ in (sort or [])],
+        )
 
         # Get all entities
         entities = list(self._data[store].values())
@@ -167,6 +183,14 @@ class SimulationStore:
             BadQueryError: If where clause is malformed
         """
         self._check_store_exists(store)
+        self._check_paths(
+            store,
+            [
+                path
+                for path, predicate in (where or {}).items()
+                if not (isinstance(predicate, dict) and "$exists" in predicate)
+            ],
+        )
 
         if where is None:
             return len(self._data[store])
@@ -303,6 +327,78 @@ class SimulationStore:
             cp: A checkpoint previously returned by checkpoint()
         """
         self._data = copy.deepcopy(cp)
+
+    def _check_paths(self, store: str, paths: builtins.list[str]) -> None:
+        """Raise UnknownFieldError for query paths that exist in no record of ``store``.
+
+        Only the failure path: a path that resolves in at least one record, or that the
+        store's schema declares (a field no record carries yet), is left to the query as
+        before, and so is any path on an empty store. ``$exists`` predicates are exempt
+        by the caller -- asking whether a field exists is a valid question either way.
+        """
+        entities = self._data[store].values()
+        if not entities:
+            return
+        unknown: builtins.list[str] = []
+        for path in paths:
+            if not isinstance(path, str) or path in unknown:
+                continue
+            if any(self._resolves(e, path) for e in entities):
+                continue
+            if self._declared(store, path):
+                continue
+            unknown.append(path)
+        if unknown:
+            fields, more = self.field_paths(store)
+            raise UnknownFieldError(store, unknown, fields, more)
+
+    def field_paths(
+        self, store: str, limit: int = MAX_LISTED_FIELDS
+    ) -> tuple[builtins.list[str], int]:
+        """The store's dotted field paths, most common across records first.
+
+        Nested objects are walked (up to a few levels); arrays are not, since a ``where``
+        path cannot traverse them. Returns ``(paths[:limit], number left out)``. Map-like
+        objects keyed by ids contribute paths seen in one record each, so they sort last.
+        """
+        counts: dict[str, int] = {}
+
+        def walk(obj: dict, prefix: str, depth: int) -> None:
+            for key, value in obj.items():
+                path = f"{prefix}{key}"
+                counts[path] = counts.get(path, 0) + 1
+                if isinstance(value, dict) and depth < _MAX_PATH_DEPTH:
+                    walk(value, f"{path}.", depth + 1)
+
+        for entity in self._data.get(store, {}).values():
+            walk(entity, "", 1)
+        ordered = sorted(counts, key=lambda p: (-counts[p], p))
+        return ordered[:limit], max(0, len(ordered) - limit)
+
+    def _resolves(self, entity: dict, path: str) -> bool:
+        try:
+            self._get_nested_value(entity, path)
+        except KeyError:
+            return False
+        return True
+
+    def _declared(self, store: str, path: str) -> bool:
+        """Whether every segment of ``path`` is a declared ``properties`` entry."""
+        node: Any = self._defs.get(store)
+        for part in path.split("."):
+            node = self._resolve_ref(node)
+            props = node.get("properties") if isinstance(node, dict) else None
+            if not isinstance(props, dict) or part not in props:
+                return False
+            node = props[part]
+        return True
+
+    def _resolve_ref(self, node: Any) -> Any:
+        if isinstance(node, dict) and isinstance(node.get("$ref"), str):
+            ref = node["$ref"]
+            if ref.startswith("#/$defs/"):
+                return self._schema.get("$defs", {}).get(ref.split("/")[-1], {})
+        return node
 
     def _matches_where(self, entity: dict, where: dict) -> bool:
         """Check if an entity matches a where clause.

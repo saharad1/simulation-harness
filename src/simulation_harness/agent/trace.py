@@ -166,6 +166,13 @@ def _this_call(messages: list[Any]) -> list[Any]:
     return list(messages)
 
 
+def _merge(*names: list[str]) -> list[str]:
+    out: list[str] = []
+    for group in names:
+        out.extend(n for n in group if n not in out)
+    return out
+
+
 def _is_skill_read(name: str, args: dict[str, Any]) -> bool:
     if name not in ("read_file", "grep", "glob", "ls"):
         return False
@@ -220,6 +227,31 @@ def tool_calls_of(
         entry["status"] = getattr(message, "status", None)
         entry["result_head"] = shown[:RESULT_HEAD_CHARS]
     return out
+
+
+#: Error codes a state tool answers with only when a failure-path fix acted, and the name
+#: the fix is recorded under in ``fix_fired`` (plan 28 step 3).
+FIX_ERROR_CODES = {
+    "unknown_field": "S3a_bad_path",
+}
+
+
+def fixes_in_tool_results(messages: list[Any]) -> list[str]:
+    """Fixes that answered one of this call's tool calls, in first-fired order."""
+    fired: list[str] = []
+    for message in _this_call(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        try:
+            body = json.loads(_text_of(message.content))
+        except (TypeError, ValueError):
+            continue
+        name = (
+            FIX_ERROR_CODES.get(body.get("error")) if isinstance(body, dict) else None
+        )
+        if name and name not in fired:
+            fired.append(name)
+    return fired
 
 
 class CallTracer:
@@ -278,7 +310,9 @@ class CallTracer:
                 "tool_calls": calls,
                 "final_response": response_text,
                 "returned": returned,
-                "fix_fired": list(fix_fired or []),
+                "fix_fired": _merge(
+                    fix_fired or [], fixes_in_tool_results(messages or [])
+                ),
             }
             line = json.dumps(record, ensure_ascii=False, default=str)
             with self._lock:

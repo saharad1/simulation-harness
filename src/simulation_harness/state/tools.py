@@ -16,6 +16,7 @@ from .errors import (
     ValidationError,
     UnknownStoreError,
     BadQueryError,
+    UnknownFieldError,
 )
 
 
@@ -121,6 +122,13 @@ def _error_to_dict(error: Exception) -> dict:
             "error": "unknown_store",
             "message": str(error),
             "available_stores": getattr(error, "available_stores", []),
+        }
+    elif isinstance(error, UnknownFieldError):
+        return {
+            "error": "unknown_field",
+            "message": str(error),
+            "unknown": error.paths,
+            "fields": error.fields,
         }
     elif isinstance(error, BadQueryError):
         return {"error": "bad_query", "message": str(error)}

@@ -11,6 +11,7 @@ from .errors import (
     ValidationError,
     UnknownStoreError,
     BadQueryError,
+    UnknownFieldError,
 )
 from .store import SimulationStore
 from .loader import load_store_from_skill
@@ -24,6 +25,7 @@ __all__ = [
     "ValidationError",
     "UnknownStoreError",
     "BadQueryError",
+    "UnknownFieldError",
     "SimulationStore",
     "load_store_from_skill",
     "StoreRegistry",
