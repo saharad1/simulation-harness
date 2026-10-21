@@ -367,6 +367,7 @@ def test_no_skill_branch_puts_raw_spec_in_prompt_and_stages_no_skill(
     (skill_dir / "SKILL.md").write_text(
         "---\nname: petstore\ndescription: Simulate the Pet Store API.\n---\n# SKILL-BODY\n"
     )
+    (skill_dir / "schema.json").write_text('{"type": "object", "properties": {}}')
     mock_spec.spec_dict = {
         "openapi": "3.0.0",
         "paths": {"/pets/{petId}": {"get": {"operationId": "getPetByIdMarker"}}},
@@ -595,6 +596,19 @@ def test_no_skill_prompt_carries_the_store_layout_and_nothing_else(
     ).system_prompt
     assert full == render_system_prompt(mock_spec)
     assert "Store Layout" not in full and "x-element-ref" not in full
+
+
+def test_no_skill_without_a_store_layout_fails_loudly(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """M8: a `no_skill` skill dir with no schema.json would silently drop the S1 Store
+    Layout section; refuse it at construction instead (the store needs the file too)."""
+    skill_dir = tmp_path / "petstore"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: petstore\n---\n# SKILL-BODY\n")
+    mock_spec.spec_dict = {"openapi": "3.0.0", "paths": {}}
+    with pytest.raises(ValueError, match="schema.json"):
+        _prompt_agent(skill_dir, mock_spec, mock_operation, skill_enabled=False)
 
 
 def _build_spec_only_agent(

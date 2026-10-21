@@ -274,11 +274,18 @@ def build_system_prompt(
     """
     if skill_enabled:
         return render_system_prompt(spec)
+    # The layout is for no_skill only: spec_only has no store to lay out.
+    layout = _store_layout(skill_dir) if state_enabled else None
+    if state_enabled and skill_dir is not None and layout is None:
+        # Without it the no_skill prompt would silently lack its S1 section; the store
+        # cannot be loaded without the file either, so fail now, not at the first call.
+        raise ValueError(
+            f"no_skill needs the store layout: no schema.json in {skill_dir}"
+        )
     return render_system_prompt(
         spec,
         raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False),
-        # The layout is for no_skill only: spec_only has no store to lay out.
-        store_schema=_store_layout(skill_dir) if state_enabled else None,
+        store_schema=layout,
         stateless=not state_enabled,
     )
 
