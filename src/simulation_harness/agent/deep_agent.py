@@ -38,6 +38,7 @@ from simulation_harness.agent.session_manager import SessionManager
 from simulation_harness.agent.skill_backend import build_skill_sources
 from simulation_harness.agent.trace import CallTracer
 from simulation_harness.agent.usage import UsageMeter
+from simulation_harness.skills.generation.llm import no_cache_kwargs
 
 logger = get_logger(__name__)
 
@@ -218,6 +219,9 @@ class DeepAgent:
         }
         if base_url is not None:
             llm_kwargs["base_url"] = base_url
+        # HARNESS_LLM_NO_CACHE: the same gateway-cache opt-out generation uses. Without it
+        # an identical replay (a rerun of a kept cell) is answered from the cache.
+        llm_kwargs.update(no_cache_kwargs())
 
         self.llm = ChatOpenAI(**llm_kwargs)
 

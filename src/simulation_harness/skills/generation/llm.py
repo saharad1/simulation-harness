@@ -23,10 +23,12 @@ _TRUNCATED_MSG = (
 )
 
 # Set HARNESS_LLM_NO_CACHE to a truthy value ("1", "true", "yes") to bypass the
-# shared LiteLLM gateway's whole-response cache. Off by default: the cache is a
+# shared LiteLLM gateway's whole-response cache, for generation (`build_chat`) and
+# for the runtime simulator (`DeepAgent`) alike. Off by default: the cache is a
 # real cost/latency win for ordinary generation, and only a determinism
-# measurement (scripts/check-generation-determinism.sh) needs it disabled. The
-# harness reads this once per `build_chat` call, so it must be set in the
+# measurement (scripts/check-generation-determinism.sh) or a rerun that must be an
+# independent sample needs it disabled. The
+# harness reads this once per client built, so it must be set in the
 # environment the harness process itself was started with (or in that process's
 # `.env`) — restart the harness after changing it, don't set it only in a
 # client's shell.
@@ -38,6 +40,17 @@ def _no_cache_requested() -> bool:
     # Resolved through config.env_source so this variable has the same ingress as
     # every other HARNESS_* one: process env first, then `.env` (issue #13).
     return (harness_env(_NO_CACHE_ENV_VAR) or "").strip().lower() in _TRUTHY
+
+
+def no_cache_kwargs() -> dict[str, Any]:
+    """``ChatOpenAI`` kwargs that opt a request out of the gateway's response cache.
+
+    ``{}`` unless HARNESS_LLM_NO_CACHE is truthy. The one mechanism every LLM client of
+    the harness uses, so generation and the runtime simulator cannot drift apart.
+    """
+    if _no_cache_requested():
+        return {"extra_body": {"cache": {"no-cache": True}}}
+    return {}
 
 
 # Statuses that no retry, repair, or per-stage degrade can recover from: the key
@@ -91,8 +104,7 @@ def build_chat(
         kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
     if base_url:
         kwargs["base_url"] = base_url
-    if _no_cache_requested():
-        kwargs["extra_body"] = {"cache": {"no-cache": True}}
+    kwargs.update(no_cache_kwargs())
     return ChatOpenAI(**kwargs)
 
 
