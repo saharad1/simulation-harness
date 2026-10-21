@@ -297,9 +297,29 @@ class _Cluster:
 
 
 def _json_type(prop: dict) -> str:
+    """The property's base JSON type, reading through nullability.
+
+    ``type: [X, "null"]`` and ``anyOf``/``oneOf`` with a ``{"type": "null"}``
+    variant are X: without this an ``Optional[int]`` fell through to the
+    ``"string"`` fallback. Nullability itself is restored on the generated schema
+    by ``widen_nullable_fields``.
+    """
     declared = prop.get("type")
     if isinstance(declared, str):
         return declared
+    if isinstance(declared, list):
+        non_null = [t for t in declared if isinstance(t, str) and t != "null"]
+        if len(non_null) == 1:
+            return non_null[0]
+    variants = prop.get("anyOf") or prop.get("oneOf")
+    if isinstance(variants, list):
+        types = {
+            _json_type(v)
+            for v in variants
+            if isinstance(v, dict) and v.get("type") != "null"
+        }
+        if len(types) == 1:
+            return types.pop()
     if isinstance(prop.get("properties"), dict):
         return "object"
     return "string"

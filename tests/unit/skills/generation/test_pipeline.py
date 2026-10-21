@@ -325,3 +325,49 @@ def test_skill_bundle_carries_identity_provenance() -> None:
 
 def test_skill_bundle_identity_provenance_defaults_to_empty() -> None:
     assert P.SkillBundle(skill_md="x", schema={}, db={}).identity_provenance == {}
+
+
+async def test_run_pipeline_widens_spec_nullable_fields_before_seeding() -> None:
+    import copy
+
+    spec = copy.deepcopy(SPEC)
+    spec["paths"]["/features/{id}"]["get"]["responses"]["200"] = {
+        "description": "ok",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    },
+                }
+            }
+        },
+    }
+    schema = copy.deepcopy(SCHEMA)
+    schema["$defs"]["Feature"]["properties"]["label"] = {"type": "string"}
+    seed = AsyncMock(return_value={"features": [{"id": "f1", "label": None}]})
+    with (
+        patch.object(P, "analyze", AsyncMock(return_value=_ir())),
+        patch.object(P, "generate_schema", AsyncMock(return_value=schema)),
+        patch.object(P, "generate_seed", seed),
+        patch.object(
+            P, "generate_section", AsyncMock(return_value="### /features/{id} GET\nok")
+        ),
+        patch.object(P, "build_chat"),
+    ):
+        bundle = await P.run_pipeline(
+            spec,
+            "aha",
+            api_key=None,
+            base_url=None,
+            gen_config=GenerationConfig(
+                scenarios_enabled=False, behavior_enabled=False
+            ),
+            model="m",
+        )
+    label = bundle.schema["$defs"]["Feature"]["properties"]["label"]
+    assert label["type"] == ["string", "null"]
+    # The seed stage designs rows against the widened schema.
+    assert seed.await_args.args[1]["$defs"]["Feature"]["properties"]["label"] == label

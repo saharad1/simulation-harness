@@ -1,6 +1,8 @@
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from jsonschema.validators import Draft202012Validator
 
 from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.skills.generation.ir import (
@@ -415,3 +417,218 @@ def test_constrained_or_unrelated_returns_open_nothing(returns: dict) -> None:
     assert S.open_value_fields(_status_spec(returns), _room_ir()) == {}
     schema = S.relax_open_fields_schema(_room_schema(), _room_ir(), {})
     assert schema["$defs"]["Room"]["properties"]["status"]["enum"] == ["open"]
+
+
+# --- nullability carried over from the spec --------------------------------
+
+
+def _tool_spec(returns: dict, *, components: dict | None = None, request=None) -> dict:
+    """A tool-style spec: one POST whose 200 response wraps ``returns``."""
+    op: dict = {
+        "operationId": "get_order",
+        "responses": {
+            "200": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {"returns": returns},
+                        }
+                    }
+                }
+            }
+        },
+    }
+    if request is not None:
+        op["requestBody"] = {"content": {"application/json": {"schema": request}}}
+    spec: dict = {
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": {"/get_order": {"post": op}},
+    }
+    if components:
+        spec["components"] = {"schemas": components}
+    return spec
+
+
+def _order_schema(**extra_props) -> dict:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"orders": {"type": "array", "items": {"$ref": "#/$defs/Order"}}},
+        "$defs": {
+            "Order": {
+                "type": "object",
+                "x-primary-key": "order_id",
+                "properties": {
+                    "order_id": {"type": "string"},
+                    "status": {"type": "string", "enum": ["cancelled"]},
+                    "price": {"type": "integer"},
+                    **extra_props,
+                },
+            }
+        },
+    }
+
+
+_NULLABLE_ORDER = {
+    "type": "object",
+    "properties": {
+        "order_id": {"type": "string"},
+        "status": {
+            "anyOf": [{"const": "cancelled", "type": "string"}, {"type": "null"}],
+            "default": None,
+        },
+        "price": {"type": ["integer", "null"]},
+    },
+}
+
+
+def _accepts(schema: dict, row: dict) -> bool:
+    validator = Draft202012Validator(
+        {"$defs": schema["$defs"], "$ref": "#/$defs/Order"}
+    )
+    return validator.is_valid(row)
+
+
+def test_a_nullable_spec_property_accepts_null_in_the_store() -> None:
+    schema = _order_schema()
+    assert not _accepts(schema, {"order_id": "o1", "status": None})
+    S.widen_nullable_fields(schema, _tool_spec(_NULLABLE_ORDER))
+    props = schema["$defs"]["Order"]["properties"]
+    assert props["status"] == {"type": ["string", "null"], "enum": ["cancelled", None]}
+    assert props["price"] == {"type": ["integer", "null"]}
+    assert _accepts(schema, {"order_id": "o1", "status": None, "price": None})
+    # Still rejects what the spec rejects.
+    assert not _accepts(schema, {"order_id": "o1", "status": "pending"})
+
+
+def test_widen_nullable_fields_is_idempotent() -> None:
+    once = S.widen_nullable_fields(_order_schema(), _tool_spec(_NULLABLE_ORDER))
+    twice = S.widen_nullable_fields(
+        json.loads(json.dumps(once)), _tool_spec(_NULLABLE_ORDER)
+    )
+    assert twice == once
+    assert S.nullable_widenings(once, _tool_spec(_NULLABLE_ORDER)) == []
+
+
+def test_nullable_widenings_lists_what_the_pass_changes() -> None:
+    assert S.nullable_widenings(_order_schema(), _tool_spec(_NULLABLE_ORDER)) == [
+        ("Order", "price"),
+        ("Order", "status"),
+    ]
+
+
+def test_nullable_true_and_component_refs_are_followed() -> None:
+    order = {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "string"},
+            "status": {"type": "string", "enum": ["cancelled"], "nullable": True},
+            "price": {"$ref": "#/components/schemas/Price"},
+        },
+    }
+    spec = _tool_spec(
+        {"$ref": "#/components/schemas/Order"},
+        components={"Order": order, "Price": {"type": "integer", "nullable": True}},
+    )
+    schema = S.widen_nullable_fields(_order_schema(), spec)
+    props = schema["$defs"]["Order"]["properties"]
+    assert props["status"]["type"] == ["string", "null"]
+    assert props["price"]["type"] == ["integer", "null"]
+
+
+def test_the_primary_key_is_never_widened() -> None:
+    returns = {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": ["string", "null"]},
+            "price": {"type": "integer"},
+        },
+    }
+    schema = S.widen_nullable_fields(_order_schema(), _tool_spec(returns))
+    assert schema["$defs"]["Order"]["properties"]["order_id"] == {"type": "string"}
+
+
+def test_an_object_without_the_key_or_a_request_body_widens_nothing() -> None:
+    # A same-named nullable field on an unrelated object (no `order_id`) or on a
+    # request (an optional argument) says nothing about the stored row.
+    unrelated = {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "string"},
+            "status": _NULLABLE_ORDER["properties"]["status"],
+        },
+    }
+    spec = _tool_spec(unrelated, request=_NULLABLE_ORDER)
+    schema = S.widen_nullable_fields(_order_schema(), spec)
+    assert schema == _order_schema()
+
+
+def test_nested_objects_and_ref_properties_are_widened() -> None:
+    schema = _order_schema(
+        address={"$ref": "#/$defs/Address"},
+        note={"$ref": "#/$defs/Note"},
+    )
+    schema["$defs"]["Address"] = {
+        "type": "object",
+        "properties": {"line2": {"type": "string"}},
+    }
+    schema["$defs"]["Note"] = {"type": "object", "properties": {}}
+    returns = {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "string"},
+            "address": {
+                "type": "object",
+                "properties": {
+                    "line2": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+                },
+            },
+            "note": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        },
+    }
+    S.widen_nullable_fields(schema, _tool_spec(returns))
+    assert schema["$defs"]["Address"]["properties"]["line2"]["type"] == [
+        "string",
+        "null",
+    ]
+    note = schema["$defs"]["Order"]["properties"]["note"]
+    assert note == {"anyOf": [{"$ref": "#/$defs/Note"}, {"type": "null"}]}
+    assert _accepts(
+        schema, {"order_id": "o1", "note": None, "address": {"line2": None}}
+    )
+
+
+def test_a_composed_key_entity_matches_on_its_key_fields_and_keeps_them() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "flights": {"type": "array", "items": {"$ref": "#/$defs/Flight"}}
+        },
+        "$defs": {
+            "Flight": {
+                "type": "object",
+                "x-primary-key": "flight_key",
+                "x-key-fields": ["date", "flight_number"],
+                "properties": {
+                    "flight_key": {"type": "string"},
+                    "date": {"type": "string"},
+                    "flight_number": {"type": "string"},
+                    "gate": {"type": "string"},
+                },
+            }
+        },
+    }
+    returns = {
+        "type": "object",
+        "properties": {
+            "date": {"type": ["string", "null"]},
+            "flight_number": {"type": "string"},
+            "gate": {"type": ["string", "null"]},
+        },
+    }
+    S.widen_nullable_fields(schema, _tool_spec(returns))
+    props = schema["$defs"]["Flight"]["properties"]
+    assert props["date"] == {"type": "string"}
+    assert props["gate"]["type"] == ["string", "null"]

@@ -32,6 +32,7 @@ from simulation_harness.skills.generation.stages.schema import (
     open_value_fields,
     relax_open_fields_ir,
     relax_open_fields_schema,
+    widen_nullable_fields,
 )
 from simulation_harness.skills.generation.stages.scenarios import generate_scenarios
 from simulation_harness.skills.generation.stages.seed import generate_seed
@@ -194,6 +195,9 @@ async def run_pipeline(
         *[one_section(c) for c in chunks],
     )
     schema = relax_open_fields_schema(schema, ir, open_fields)
+    # The IR cannot carry "or null", so a spec-nullable field reaches the schema
+    # as its bare type; restore it from the spec before the seed stage reads it.
+    schema = widen_nullable_fields(schema, spec_dict)
 
     # Stage: seed (depends on schema + scenarios)
     scenario_dicts = [s.model_dump() for s in scenarios]

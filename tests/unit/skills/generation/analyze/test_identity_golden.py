@@ -16,6 +16,7 @@ import pytest
 
 from simulation_harness.openapi.parser import OpenAPISpec
 from simulation_harness.skills.generation.stages.analyze.identity import (
+    _json_type,
     derive_identity,
 )
 from simulation_harness.skills.generation.stages.analyze.sources import (
@@ -274,3 +275,25 @@ def test_synthetic_carve_out_is_load_bearing_on_tau2_retail() -> None:
     assert len(with_rule.undecidable) == 6
     assert without.collections == ["items", "orders"]
     assert len(without.undecidable) == 10
+
+
+@pytest.mark.parametrize(
+    ("prop", "expected"),
+    [
+        (
+            {"anyOf": [{"const": "cancelled", "type": "string"}, {"type": "null"}]},
+            "string",
+        ),
+        ({"anyOf": [{"type": "integer"}, {"type": "null"}]}, "integer"),
+        ({"oneOf": [{"type": "null"}, {"type": "number"}]}, "number"),
+        ({"anyOf": [{"type": "array", "items": {}}, {"type": "null"}]}, "array"),
+        ({"type": ["integer", "null"]}, "integer"),
+        ({"type": "boolean", "nullable": True}, "boolean"),
+        ({"type": ["string", "integer"]}, "string"),
+        ({"anyOf": [{"type": "string"}, {"type": "integer"}]}, "string"),
+    ],
+)
+def test_json_type_reads_the_non_null_variant(prop: dict, expected: str) -> None:
+    # A nullable property's base type is its non-null variant's type, not the
+    # "string" fallback: an `Optional[int]` must not become a string field.
+    assert _json_type(prop) == expected

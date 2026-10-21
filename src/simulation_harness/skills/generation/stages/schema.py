@@ -127,6 +127,320 @@ def relax_open_fields_schema(
     return schema
 
 
+# --- nullability carried over from the spec ---------------------------------
+#
+# The schema LLM is shown the IR, and an IR ``Field`` has no way to say "or null",
+# so ``Optional[X]`` in the spec arrives in schema.json as plain ``X``: the store
+# then rejects ``status: null`` that the real system writes. Restored here in
+# code, from the spec, after generation — the same deterministic post-pass shape
+# as ``relax_open_fields_schema``.
+
+
+def _spec_resolve(spec: dict, node: object) -> object:
+    """Follow local ``$ref``s (``#/components/schemas/X`` and the like)."""
+    seen: set[str] = set()
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        ref = node["$ref"]
+        if not ref.startswith("#/") or ref in seen:
+            return node
+        seen.add(ref)
+        target: object = spec
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            target = target.get(part) if isinstance(target, dict) else None
+        if not isinstance(target, dict):
+            return node
+        node = target
+    return node
+
+
+def _spec_allows_null(spec: dict, node: object, depth: int = 0) -> bool:
+    if not isinstance(node, dict) or depth > 16:
+        return False
+    if node.get("nullable") is True:
+        return True
+    node = _spec_resolve(spec, node)
+    if not isinstance(node, dict):
+        return False
+    declared = node.get("type")
+    if declared == "null" or (isinstance(declared, list) and "null" in declared):
+        return True
+    if node.get("nullable") is True:
+        return True
+    variants = node.get("anyOf") or node.get("oneOf")
+    return isinstance(variants, list) and any(
+        _spec_allows_null(spec, v, depth + 1) for v in variants
+    )
+
+
+def _spec_object(spec: dict, node: object) -> dict | None:
+    """The object schema a spec property holds, reading through null and arrays."""
+    for _ in range(8):
+        node = _spec_resolve(spec, node)
+        if not isinstance(node, dict):
+            return None
+        if isinstance(node.get("properties"), dict):
+            return node
+        variants = node.get("anyOf") or node.get("oneOf")
+        if isinstance(variants, list):
+            rest = [
+                v
+                for v in variants
+                if not (isinstance(v, dict) and v.get("type") == "null")
+            ]
+            if len(rest) != 1:
+                return None
+            node = rest[0]
+        elif isinstance(node.get("items"), dict):
+            node = node["items"]
+        else:
+            return None
+    return None
+
+
+def _spec_response_objects(spec: dict) -> list[dict]:
+    """Every object schema reachable from a success response or a component.
+
+    Request bodies are left out on purpose: a nullable request field is an
+    optional argument, which says nothing about whether the stored value can be
+    null.
+    """
+    roots: list[object] = []
+    paths = spec.get("paths")
+    for item in (paths or {}).values() if isinstance(paths, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        for op in item.values():
+            responses = op.get("responses") if isinstance(op, dict) else None
+            if not isinstance(responses, dict):
+                continue
+            for resp in responses.values():
+                if not isinstance(resp, dict):
+                    continue
+                roots.append(resp.get("schema"))  # Swagger 2
+                content = resp.get("content")
+                if isinstance(content, dict):
+                    roots.extend(
+                        media.get("schema")
+                        for media in content.values()
+                        if isinstance(media, dict)
+                    )
+    for holder in (
+        (spec.get("components") or {}).get("schemas"),
+        spec.get("definitions"),
+    ):
+        if isinstance(holder, dict):
+            roots.extend(holder.values())
+
+    out: list[dict] = []
+    seen: set[int] = set()
+    stack = list(reversed(roots))
+    while stack:
+        node = _spec_resolve(spec, stack.pop())
+        if not isinstance(node, dict) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        props = node.get("properties")
+        if isinstance(props, dict):
+            out.append(node)
+            stack.extend(reversed(list(props.values())))
+        for key in ("items", "additionalProperties"):
+            if isinstance(node.get(key), dict):
+                stack.append(node[key])
+        for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            if isinstance(node.get(key), list):
+                stack.extend(reversed(node[key]))
+    return out
+
+
+def _accepts_null(node: dict) -> bool:
+    """Whether a generated schema property already admits ``null``."""
+    if "$ref" in node:
+        return False
+    variants = node.get("anyOf") or node.get("oneOf")
+    if isinstance(variants, list):
+        return any(isinstance(v, dict) and _accepts_null(v) for v in variants)
+    declared = node.get("type")
+    type_ok = (
+        declared is None
+        or declared == "null"
+        or (isinstance(declared, list) and "null" in declared)
+    )
+    enum = node.get("enum")
+    enum_ok = not isinstance(enum, list) or None in enum
+    const_ok = "const" not in node or node["const"] is None
+    return type_ok and enum_ok and const_ok
+
+
+def _make_nullable(node: dict) -> None:
+    if "$ref" in node:
+        node["anyOf"] = [{"$ref": node.pop("$ref")}, {"type": "null"}]
+        return
+    for key in ("anyOf", "oneOf"):
+        if isinstance(node.get(key), list):
+            node[key].append({"type": "null"})
+            return
+    declared = node.get("type")
+    if isinstance(declared, str) and declared != "null":
+        node["type"] = [declared, "null"]
+    elif isinstance(declared, list) and "null" not in declared:
+        declared.append("null")
+    if "const" in node and node["const"] is not None:
+        node["enum"] = [node.pop("const"), None]
+    elif isinstance(node.get("enum"), list) and None not in node["enum"]:
+        node["enum"].append(None)
+
+
+def _def_object(schema: dict, node: object) -> tuple[str | None, dict | None]:
+    """``(def name, object schema)`` a generated property holds, through ``$ref``,
+    a null union and array ``items``."""
+    name = None
+    for _ in range(8):
+        if not isinstance(node, dict):
+            return None, None
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if not ref.startswith("#/$defs/"):
+                return None, None
+            name = ref.split("/")[-1]
+            defs = schema.get("$defs")
+            node = defs.get(name) if isinstance(defs, dict) else None
+            continue
+        if isinstance(node.get("properties"), dict):
+            return name, node
+        variants = node.get("anyOf") or node.get("oneOf")
+        if isinstance(variants, list):
+            rest = [
+                v
+                for v in variants
+                if not (isinstance(v, dict) and v.get("type") == "null")
+            ]
+            if len(rest) != 1:
+                return None, None
+            node = rest[0]
+        elif isinstance(node.get("items"), dict):
+            node = node["items"]
+        else:
+            return None, None
+    return None, None
+
+
+def _widen_object(
+    schema: dict,
+    spec: dict,
+    label: str,
+    entity_def: dict,
+    spec_obj: dict,
+    keep: set[str],
+    widened: set[tuple[str, str]],
+    seen: set[tuple[int, int]],
+) -> None:
+    if (id(entity_def), id(spec_obj)) in seen:
+        return
+    seen.add((id(entity_def), id(spec_obj)))
+    props = entity_def.get("properties")
+    spec_props = spec_obj.get("properties")
+    if not isinstance(props, dict) or not isinstance(spec_props, dict):
+        return
+    for name in sorted(set(props) & set(spec_props)):
+        node, spec_node = props[name], spec_props[name]
+        if not isinstance(node, dict):
+            continue
+        # Recurse first: widening a `$ref` property rewrites it into an anyOf.
+        nested_name, nested_def = _def_object(schema, node)
+        nested_spec = _spec_object(spec, spec_node)
+        if nested_def is not None and nested_spec is not None:
+            _widen_object(
+                schema,
+                spec,
+                nested_name or f"{label}.{name}",
+                nested_def,
+                nested_spec,
+                set(),
+                widened,
+                seen,
+            )
+        if name in keep or not _spec_allows_null(spec, spec_node):
+            continue
+        if not _accepts_null(node):
+            _make_nullable(node)
+            widened.add((label, name))
+
+
+def _widen(schema: dict, spec: dict) -> list[tuple[str, str]]:
+    if not isinstance(schema, dict) or not isinstance(spec, dict):
+        return []
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    objects = _spec_response_objects(spec)
+    widened: set[tuple[str, str]] = set()
+    seen: set[tuple[int, int]] = set()
+    for collection in sorted(properties):
+        def_name, entity_def = _resolve_def(schema, collection)
+        if entity_def is None or not isinstance(entity_def.get("properties"), dict):
+            continue
+        key_fields = entity_def.get("x-key-fields")
+        pk = entity_def.get("x-primary-key")
+        keys = (
+            [k for k in key_fields if isinstance(k, str)]
+            if isinstance(key_fields, list) and key_fields
+            else [pk]
+            if isinstance(pk, str)
+            else []
+        )
+        if not keys:
+            continue  # nothing anchors a spec object to this entity
+        def_props = set(entity_def["properties"])
+        for obj in objects:
+            spec_props = set(obj["properties"])
+            # The spec object carries this entity's key, and is mostly made of
+            # its fields — a payload that merely mentions the key is not it.
+            if not set(keys) <= spec_props or 2 * len(spec_props & def_props) < len(
+                spec_props
+            ):
+                continue
+            _widen_object(
+                schema,
+                spec,
+                def_name or collection,
+                entity_def,
+                obj,
+                {*keys, pk} - {None},
+                widened,
+                seen,
+            )
+    return sorted(widened)
+
+
+def widen_nullable_fields(schema: dict, spec: dict) -> dict:
+    """Let every entity property the spec declares nullable accept ``null``.
+
+    A property is nullable in the spec when it (after ``$ref``s) has an
+    ``anyOf``/``oneOf`` variant ``{"type": "null"}``, a ``type`` list containing
+    ``"null"``, or ``nullable: true``. The spec object is matched to a collection
+    ``$def`` by carrying its key (``x-primary-key``, or every ``x-key-fields``
+    entry) with most of its properties being that ``$def``'s; nested objects are
+    followed through ``$ref``/``items`` on both sides. Only success responses and
+    components count, and key fields are never widened.
+
+    Widening: ``type: X`` becomes ``[X, "null"]``, an ``enum`` gains ``null``, a
+    ``const`` becomes ``enum: [const, null]``, a ``$ref`` becomes
+    ``anyOf: [{$ref}, {type: null}]``. Mutates and returns ``schema``; idempotent,
+    so it is safe on an already-generated skill's schema.json.
+    """
+    _widen(schema, spec)
+    return schema
+
+
+def nullable_widenings(schema: dict, spec: dict) -> list[tuple[str, str]]:
+    """``(def, property)`` pairs :func:`widen_nullable_fields` would change.
+
+    Does not modify ``schema``.
+    """
+    return _widen(json.loads(json.dumps(schema)), spec)
+
+
 def _resolve_def(schema: dict, collection: str) -> tuple[str | None, dict | None]:
     """Follow ``properties[collection].items.$ref`` into ``$defs``.
 
