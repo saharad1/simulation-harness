@@ -435,3 +435,93 @@ async def test_a_failed_write_in_an_earlier_call_does_not_fail_this_one(
     )
 
     assert out == {}
+
+
+# --- I1: a failed write that names no primary key -----------------------------
+#
+# `state_insert` without the primary key fails with validation_error ("Primary key
+# field 'id' is required") under the target (store, None). A later successful insert
+# of the complete entity is the recovery, but it is recorded under (store, "<id>"),
+# so it never cleared the keyless failure and a recovered call failed closed.
+
+_RESERVATION = {
+    "restaurant_id": "rest_001",
+    "restaurant_name": "The Italian Corner",
+    "date_time": "2025-04-01T19:00:00",
+    "party_size": 2,
+    "guest_name": "Ann Lee",
+    "guest_phone": "+1-555-000-0000",
+    "guest_email": "ann@example.com",
+    "confirmation_code": "CONF-NEW",
+    "created_at": "2025-03-20T10:00:00",
+}
+_KEYLESS_INSERT = ("state_insert", {"store": "reservations", "entity": _RESERVATION})
+_FULL_INSERT = (
+    "state_insert",
+    {"store": "reservations", "entity": {"id": "r_new", **_RESERVATION}},
+)
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_failed_insert_redone_with_its_key_keeps_the_call(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    agent = _make_agent(mock_spec, mock_operation)
+
+    out = await _call_with(
+        agent, [_KEYLESS_INSERT, _FULL_INSERT], '{"id": "r_new", "status": "booked"}'
+    )
+
+    assert out == {"id": "r_new", "status": "booked"}
+    store = agent.store_registry.for_thread("default")
+    assert store.get("reservations", "r_new")["guest_name"] == "Ann Lee"
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_failed_insert_is_not_cleared_by_another_kind_of_write(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    """Only a later successful insert into the same store redoes a keyless insert: an
+    update of some other row is not a redo."""
+    agent = _make_agent(mock_spec, mock_operation)
+    before = agent.store_registry.for_thread("default").snapshot()
+
+    out = await _call_with(agent, [_KEYLESS_INSERT, _GOOD_UPDATE], '{"ok": true}')
+
+    assert "store write failed" in out["error"].lower()
+    assert agent.store_registry.for_thread("default").snapshot() == before
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_failed_insert_is_not_cleared_by_an_insert_elsewhere(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    agent = _make_agent(mock_spec, mock_operation)
+    receipt = (
+        "state_insert",
+        {
+            "store": "cancellations",
+            "entity": {
+                "reservation_id": "reservation_seed_001",
+                "restaurant_name": "The Italian Corner",
+                "original_date_time": "2025-03-15T19:00:00",
+                "cancelled_at": "2025-03-12T09:00:00",
+            },
+        },
+    )
+
+    out = await _call_with(agent, [_KEYLESS_INSERT, receipt], '{"ok": true}')
+
+    assert "store write failed" in out["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_failed_insert_after_the_successful_one_still_fails(
+    mock_spec: Any, mock_operation: Any
+) -> None:
+    """Only a LATER success redoes a failed write."""
+    agent = _make_agent(mock_spec, mock_operation)
+
+    out = await _call_with(agent, [_FULL_INSERT, _KEYLESS_INSERT], '{"ok": true}')
+
+    assert "store write failed" in out["error"].lower()

@@ -172,11 +172,15 @@ def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
     list is the whole thread's history; an S2 re-ask continues the same turn, see
     `_turn_start`). A failed write is cleared only by a later successful write to the same
     store and primary key -- kept that narrow on purpose, so a success elsewhere can never
-    paper over it.
+    paper over it. A failed write that named no key has no row to match, so the
+    narrowest redo there is: a later successful write by the same tool to the same store
+    (an insert missing its primary key, re-sent complete). An update or delete of another
+    row, or a write to another store, never clears it.
     """
     start = _turn_start(messages)
     calls: dict[str, dict] = {}
-    failed: dict[tuple[str, str | None], str] = {}
+    # (store, key) for a keyed write; (store, None, tool) for a write that named no key.
+    failed: dict[tuple[str | None, ...], str] = {}
     for message in messages[start:]:
         if isinstance(message, AIMessage):
             for call in message.tool_calls or []:
@@ -198,7 +202,9 @@ def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
             )
         else:
             key = args.get("id")
-        target = (store_name, None if key is None else str(key))
+        target: tuple[str | None, ...] = (
+            (store_name, None, call["name"]) if key is None else (store_name, str(key))
+        )
         try:
             body = json.loads(message.content)
         except (TypeError, ValueError):
@@ -212,6 +218,10 @@ def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
             )
         elif code is None and target[1] is not None:
             failed.pop(target, None)
+            # A write that named no key (an insert missing its primary key) is redone by
+            # the next successful write of the same tool to the same store: its row
+            # cannot be named, and re-sending it complete is the recovery (plan 28 I1).
+            failed.pop((store_name, None, call["name"]), None)
     return list(failed.values())
 
 
