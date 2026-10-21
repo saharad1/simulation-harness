@@ -68,8 +68,8 @@ def _script() -> list[AIMessage]:
                     "name": "read_file",
                     "args": {"file_path": _SKILL_MD, "offset": 0, "limit": 20},
                 },
-                # `limit`: an unfiltered list this size is refused (plan 28 E1); a limited
-                # one is still answered, and evicted, which is what this test traces.
+                # A list this size is refused by the E1 fix; `_no_e1_refusal` switches that
+                # off so the result is evicted, which is what this test traces.
                 {
                     "id": "c2",
                     "name": "state_list",
@@ -115,6 +115,14 @@ def _spec() -> Any:
     spec.servers = [{"url": "https://api.example.com"}]
     spec.operations = []
     return spec
+
+
+@pytest.fixture(autouse=True)
+def _no_e1_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let an oversized state_list through to deepagents' eviction, which these tests trace."""
+    monkeypatch.setattr(
+        "simulation_harness.state.tools.eviction_threshold_chars", lambda: None
+    )
 
 
 def _make_agent(trace_dir: Path | None) -> tuple[DeepAgent, _ScriptedChatModel]:

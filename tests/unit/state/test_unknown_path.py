@@ -273,15 +273,29 @@ def test_e1_unfiltered_list_over_eviction_limit_is_refused() -> None:
     assert isinstance(again, dict) and again["error"] == "result_too_large"
 
 
-def test_e1_filtered_limited_or_small_lists_are_unchanged() -> None:
+def test_e1_filtered_or_limited_list_over_eviction_limit_is_refused() -> None:
+    """A `where` or `limit` does not make a result small: `limit: 1000` on the 500-user
+    retail store returned all 192,634 chars and was evicted (canary smoke, retail rich d3,
+    task 0). Any list result that would be evicted is refused."""
     store = _big_store(300)
     cfg = _config(store)
-    # Filtered: answered as before, however large.
-    rows = state_list("users", where={"bio": "x" * 400}, config=cfg)
-    assert isinstance(rows, list) and len(rows) == 300
-    # Limited: answered as before.
-    rows = state_list("users", limit=250, config=cfg)
-    assert isinstance(rows, list) and len(rows) == 250
+    for kwargs in ({"where": {"bio": "x" * 400}}, {"limit": 250}, {"limit": 1000}):
+        out = state_list("users", config=cfg, **kwargs)
+        assert isinstance(out, dict), kwargs
+        assert out["error"] == "result_too_large"
+        assert out["chars"] > 80_000
+        assert "where" in out["message"] and "limit" in out["message"]
+
+
+def test_e1_lists_under_eviction_limit_are_unchanged() -> None:
+    store = _big_store(300)
+    cfg = _config(store)
+    # Filtered to one record: answered as before.
+    rows = state_list("users", where={"email": "user7@example.com"}, config=cfg)
+    assert isinstance(rows, list) and [r["user_id"] for r in rows] == ["user_0007"]
+    # Limited under the threshold: answered as before.
+    rows = state_list("users", limit=20, config=cfg)
+    assert isinstance(rows, list) and len(rows) == 20
     # Small store, unfiltered: answered as before.
     small = _big_store(20)
     rows = state_list("users", config=_config(small))

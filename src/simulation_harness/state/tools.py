@@ -191,13 +191,15 @@ def eviction_threshold_chars() -> int | None:
 
 
 def _too_large_to_show(sim_store: Any, store: str, rows: list[dict]) -> dict | None:
-    """The refusal for an unfiltered list whose result would be evicted, else None.
+    """The refusal for a list whose result would be evicted, else None.
 
     An evicted result is replaced by a short preview and a file the LLM can only grep;
     the store files are single JSON lines, so grep hands back the whole line cut at the
     limit, and in v1 the LLM missed a user inside that blob (plan 28 S3b / E1). The
     no_skill agent has no eviction and overflowed its context instead. Refusing with the
-    filterable paths makes every condition re-ask with a ``where``.
+    filterable paths makes every condition re-ask with a ``where``. A ``where`` or ``limit``
+    does not by itself make a result small (``limit: 1000`` on the 500-user retail store
+    returned all of it), so the size is what decides.
     """
     threshold = eviction_threshold_chars()
     if threshold is None:
@@ -211,10 +213,10 @@ def _too_large_to_show(sim_store: Any, store: str, rows: list[dict]) -> dict | N
     return {
         "error": "result_too_large",
         "message": (
-            f"state_list on '{store}' without `where` or `limit` would return "
-            f"{len(rows)} records ({chars} chars), over the {threshold}-char tool-result "
-            f"limit, and would not be shown to you. Query with a `where` filter on the "
-            f"fields you need (dotted paths). Filterable paths: {listed}"
+            f"state_list on '{store}' would return {len(rows)} records ({chars} chars), "
+            f"over the {threshold}-char tool-result limit, and would not be shown to you. "
+            f"Query with a narrower `where` filter on the fields you need (dotted paths), "
+            f"or a smaller `limit`. Filterable paths: {listed}"
         ),
         "store": store,
         "records": len(rows),
@@ -260,11 +262,8 @@ def state_list(
             sort_tuples = [(field, direction) for field, direction in sort]
 
         rows = sim_store.list(store, where=where, sort=sort_tuples, limit=limit)
-        if not where and not limit:
-            refusal = _too_large_to_show(sim_store, store, rows)
-            if refusal is not None:
-                return refusal
-        return rows
+        refusal = _too_large_to_show(sim_store, store, rows)
+        return rows if refusal is None else refusal
 
     except Exception as e:
         return _error_to_dict(e)

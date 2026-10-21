@@ -216,23 +216,27 @@ async def test_e1_unfiltered_oversized_list_is_refused_in_every_condition(
 
 
 @pytest.mark.asyncio
-async def test_e1_filtered_oversized_list_is_still_evicted_as_before(
+async def test_e1_limited_oversized_list_is_refused_too(
     tmp_path: Path,
 ) -> None:
-    """A filtered (or limited) read is not the bug: it is answered, and evicted, as in v1."""
+    """A `limit` does not make a result small: `limit: 1000` on the 500-user retail store
+    returned all of it and was evicted (canary smoke, retail rich d3, task 0)."""
     script = [
         _call("c1", "state_list", store="restaurants", limit=1000),
+        _call("c2", "state_get", store="restaurants", id="rest_001"),
         _OK,
     ]
-    agent, _ = _agent(tmp_path / "t", script)
+    agent, fake = _agent(tmp_path / "t", script)
     _pad_restaurants(agent)
     try:
         await agent.generate_response("getRestaurant", {"id": "rest_001"})
     finally:
         await agent.shutdown()
+    refused = json.loads(fake.seen[1][-1]["content"])
+    assert refused["error"] == "result_too_large"
     (rec,) = _records(tmp_path / "t")
-    assert rec["fix_fired"] == []
-    assert rec["tool_calls"][0]["evicted"] is True
+    assert rec["fix_fired"] == ["E1_refused"]
+    assert rec["any_evicted"] is False
 
 
 # --- S2: malformed JSON final answer --------------------------------------------------------
