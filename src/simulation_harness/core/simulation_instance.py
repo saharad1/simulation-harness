@@ -10,6 +10,8 @@ from typing import Any
 from pydantic import SecretStr
 
 from simulation_harness.agent.deep_agent import DeepAgent
+from simulation_harness.agent.trace import TRACE_DIR_ENV
+from simulation_harness.config.env_source import harness_env
 from simulation_harness.models.domain import (
     SimulationSpec,
     SessionState,
@@ -102,6 +104,9 @@ class SimulationInstance:
             agent_recursion_limit=agent_recursion_limit,
             skill_enabled=skill_enabled,
             streaming=streaming,
+            # Per-call trace of the LLM's state queries and skill reads; off unless set.
+            trace_dir=harness_env(TRACE_DIR_ENV) or None,
+            run_label=harness_env("HARNESS_RUN_LABEL") or None,
         )
 
         logger.info(

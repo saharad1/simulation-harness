@@ -36,6 +36,7 @@ from simulation_harness.utils.logging import get_logger
 from simulation_harness.agent.prompts import render_system_prompt
 from simulation_harness.agent.session_manager import SessionManager
 from simulation_harness.agent.skill_backend import build_skill_sources
+from simulation_harness.agent.trace import CallTracer
 from simulation_harness.agent.usage import UsageMeter
 
 logger = get_logger(__name__)
@@ -137,6 +138,8 @@ class DeepAgent:
         agent_recursion_limit: int = 50,
         skill_enabled: bool = True,
         streaming: bool = True,
+        trace_dir: str | Path | None = None,
+        run_label: str | None = None,
     ):
         """Initialize Deep Agent.
 
@@ -161,6 +164,11 @@ class DeepAgent:
                 still populated). Defaults on: the shared LiteLLM gateway drops any
                 non-streamed `/chat/completions` request whose response takes longer
                 than about 10 seconds, while streamed requests of any length work.
+            trace_dir: ``HARNESS_TRACE_DIR``. When set (non-empty), every simulated call
+                appends one record of the LLM's tool calls -- state queries and SKILL.md
+                reads, result sizes, evictions -- to ``<trace_dir>/trajectory.jsonl``
+                (see ``agent.trace``). None or empty: no tracing, no change to the agent.
+            run_label: Stamped on every trace record (``HARNESS_RUN_LABEL``).
         """
         self.spec = spec
         self.operations = operations
@@ -182,6 +190,17 @@ class DeepAgent:
         # Per-simulation staging dir for the skills backend, created lazily in
         # _create_agent and removed in shutdown().
         self._skill_staging_dir: Path | None = None
+
+        # Off unless a trace dir is given; built before the graph, whose middleware it joins.
+        self.tracer: CallTracer | None = (
+            CallTracer(
+                trace_dir,
+                simulation=skill_name or (skill_dir.name if skill_dir else None),
+                run_label=run_label,
+            )
+            if trace_dir
+            else None
+        )
 
         # Initialize LLM
         # `max_tokens` is ChatOpenAI's declared field name; langchain_openai
@@ -262,6 +281,10 @@ class DeepAgent:
         """
         self.session_manager.start()
 
+    def _trace_middleware(self) -> list[Any]:
+        """The tracer's observe-only tool middleware, or nothing when tracing is off."""
+        return [self.tracer.middleware] if self.tracer is not None else []
+
     def _create_agent(self) -> CompiledStateGraph:
         """Create the runtime agent.
 
@@ -277,6 +300,7 @@ class DeepAgent:
                 self.llm,
                 system_prompt=self.system_prompt,
                 tools=create_state_tools() + [create_calculator_tool()],
+                middleware=self._trace_middleware(),
                 checkpointer=self.checkpointer,
             )
             logger.info(
@@ -300,6 +324,8 @@ class DeepAgent:
                     backend=backend,
                     tools=_READONLY_FS_TOOLS,
                 ),
+                # Last = innermost: sees each tool result before FilesystemMiddleware may evict it.
+                *self._trace_middleware(),
             ]
 
             agent = create_agent(
@@ -395,7 +421,43 @@ class DeepAgent:
         arguments: dict[str, Any],
         effective_thread_id: str,
     ) -> Any:
+        """`_simulate_call`, plus one trace record per call when tracing is on."""
+        if self.tracer is None:
+            return await self._simulate_call(
+                tool_name, operation, arguments, effective_thread_id, None
+            )
+        trace: dict[str, Any] = {}
+        returned: Any = None
+        started = time.perf_counter()
+        try:
+            returned = await self._simulate_call(
+                tool_name, operation, arguments, effective_thread_id, trace
+            )
+            return returned
+        finally:
+            self.tracer.write(
+                tool=tool_name,
+                arguments=arguments,
+                thread_id=effective_thread_id,
+                seconds=time.perf_counter() - started,
+                messages=trace.get("messages"),
+                response_text=trace.get("response_text"),
+                returned=returned,
+                outcome=trace.get("outcome", "cancelled"),
+            )
+
+    async def _simulate_call(
+        self,
+        tool_name: str,
+        operation: OpenAPIOperation,
+        arguments: dict[str, Any],
+        effective_thread_id: str,
+        trace: dict[str, Any] | None,
+    ) -> Any:
         """The body of `generate_response`, run while the thread's lock is held.
+
+        ``trace`` (tracing on only) collects this call's messages, raw response text and
+        outcome for the trace record; it never changes what is returned.
 
         Checkpoints the thread's store before the call and restores it on every path that
         returns an error body, so a failed call never leaves behind the writes it made along
@@ -455,6 +517,8 @@ class DeepAgent:
 
             # Extract the output from the last message
             messages = result.get("messages", [])
+            if trace is not None:
+                trace["messages"] = messages
             if not messages:
                 raise ValueError("No response from agent")
 
@@ -469,6 +533,8 @@ class DeepAgent:
                 f"Raw response: tool={tool_name}, response={response_text[:200]}..., "
                 f"length={len(response_text)}"
             )
+            if trace is not None:
+                trace["response_text"] = response_text
 
             # Try to parse as JSON
             try:
@@ -481,6 +547,8 @@ class DeepAgent:
                 if isinstance(parsed_response, dict) and "error" in parsed_response:
                     if store is not None:
                         store.restore(checkpoint)
+                    if trace is not None:
+                        trace["outcome"] = "error_body"
                     return parsed_response
 
                 # Fail closed: a success body over a store write that was rejected and
@@ -496,11 +564,15 @@ class DeepAgent:
                         f"failures={failures}, response={response_text[:200]}"
                     )
                     store.restore(checkpoint)
+                    if trace is not None:
+                        trace["outcome"] = "write_failed"
                     return {
                         "error": "Store write failed",
                         "details": "; ".join(failures),
                     }
 
+                if trace is not None:
+                    trace["outcome"] = "ok"
                 return parsed_response
 
             except json.JSONDecodeError as e:
@@ -511,6 +583,8 @@ class DeepAgent:
 
                 if store is not None:
                     store.restore(checkpoint)
+                if trace is not None:
+                    trace["outcome"] = "json_error"
 
                 # Return error response
                 return {
@@ -526,6 +600,8 @@ class DeepAgent:
 
             if store is not None:
                 store.restore(checkpoint)
+            if trace is not None:
+                trace["outcome"] = "exception"
 
             return {
                 "error": "Internal error generating mock response",
