@@ -22,6 +22,16 @@ The complete OpenAPI specification of this API follows, unmodified. When you rec
 ```json
 {{ raw_spec }}
 ```
+{% if store_schema %}
+
+## Store Layout
+
+The state store you read and write with the state tools is laid out by the JSON Schema below (`schema.json`): one top-level property per store, each store's record shape under `$defs`. Use exactly these store names, primary keys (`x-primary-key`), field names and value shapes in every state tool call. A field with `x-element-ref` holds identifiers of records in another store (bare id strings unless its `items` say otherwise), not copies of those records; `x-key-fields` / `x-key-separator` give the recipe of a primary key composed from several fields.
+
+```json
+{{ store_schema }}
+```
+{% endif %}
 {% else %}
 ## API Operation Details
 

@@ -121,6 +121,18 @@ def _unrecovered_write_failures(messages: list[Any], store: Any) -> list[str]:
     return list(failed.values())
 
 
+def _store_layout(skill_dir: Path | None) -> str | None:
+    """The skill's ``schema.json``, pretty-printed for the prompt, or None if there is none."""
+    if skill_dir is None:
+        return None
+    path = Path(skill_dir) / "schema.json"
+    if not path.is_file():
+        return None
+    return json.dumps(
+        json.loads(path.read_text(encoding="utf-8")), indent=2, ensure_ascii=False
+    )
+
+
 class DeepAgent:
     """Simplified agent for generating mock API responses using LangChain/LangGraph."""
 
@@ -160,7 +172,8 @@ class DeepAgent:
             agent_recursion_limit: Maximum recursion depth for agent (default: 10)
             skill_enabled: Load the compiled skill. False is the `no_skill` ablation: no
                 SkillsMiddleware and no skill files; the raw OpenAPI spec is put in the system
-                prompt instead. The state store and its tools are unaffected.
+                prompt instead, with the store's layout (``schema.json``). The state store and
+                its tools are unaffected.
             streaming: Stream chat completions (and stream_usage, so usage_metadata is
                 still populated). Defaults on: the shared LiteLLM gateway drops any
                 non-streamed `/chat/completions` request whose response takes longer
@@ -226,12 +239,17 @@ class DeepAgent:
         self.llm = ChatOpenAI(**llm_kwargs)
 
         # Render system prompt
-        # `no_skill`: the spec itself, unmodified, is the only description of the API.
+        # `no_skill`: the spec itself, unmodified, is the only description of the API --
+        # plus the layout of the store it writes into (schema.json), and nothing else of the
+        # skill. Without the layout it could not know the store's composite keys or id-only
+        # references, so part of the full-vs-no_skill gap was the missing layout (plan 28 S1).
         if skill_enabled:
             self.system_prompt = render_system_prompt(spec)
         else:
             self.system_prompt = render_system_prompt(
-                spec, raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False)
+                spec,
+                raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False),
+                store_schema=_store_layout(skill_dir),
             )
 
         logger.debug(
@@ -297,9 +315,9 @@ class DeepAgent:
         state tools. Without one, fall back to the legacy stateless agent.
         """
         if self.store_registry and self.skill_dir and not self.skill_enabled:
-            # `no_skill`: state tools only. No SkillsMiddleware and no filesystem, so nothing of
-            # the compiled skill (SKILL.md, schema.json, ...) is reachable; the spec is in the
-            # system prompt. The store itself is the skill dir's, seeded as usual.
+            # `no_skill`: state tools only. No SkillsMiddleware and no filesystem, so no skill
+            # file is reachable; the spec and the store layout (schema.json) are in the system
+            # prompt. The store itself is the skill dir's, seeded as usual.
             agent = create_agent(
                 self.llm,
                 system_prompt=self.system_prompt,

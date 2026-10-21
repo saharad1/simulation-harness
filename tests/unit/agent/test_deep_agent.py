@@ -513,3 +513,85 @@ def test_deep_agent_llm_streaming_can_be_disabled(
 
 
 # Made with Bob
+
+
+def _prompt_agent(
+    skill_dir: Path, spec: MagicMock, operation: MagicMock, *, skill_enabled: bool
+) -> DeepAgent:
+    with (
+        patch("simulation_harness.agent.deep_agent.ChatOpenAI", return_value=Mock()),
+        patch("simulation_harness.agent.deep_agent.StoreRegistry"),
+        patch(
+            "simulation_harness.agent.deep_agent.create_state_tools", return_value=[]
+        ),
+        patch("simulation_harness.agent.deep_agent.create_agent", return_value=Mock()),
+    ):
+        return DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=spec,
+            operations=[operation],
+            skill_dir=skill_dir,
+            skill_enabled=skill_enabled,
+        )
+
+
+def test_no_skill_prompt_carries_the_store_layout_and_nothing_else(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """S1: `no_skill` writes into the skill's store, so it is shown that store's layout
+    (schema.json: composite keys, id-only references) -- and nothing else of the skill. The
+    `full` prompt is unchanged.
+    """
+    import json
+
+    from simulation_harness.agent.prompts import render_system_prompt
+
+    skill_dir = tmp_path / "petstore"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: petstore\ndescription: Simulate the Pet Store API.\n---\n# SKILL-BODY\n"
+    )
+    schema = {
+        "type": "object",
+        "properties": {"pets": {"type": "array", "items": {"$ref": "#/$defs/Pet"}}},
+        "$defs": {
+            "Pet": {
+                "x-primary-key": "pet_key",
+                "properties": {
+                    "pet_key": {"type": "string"},
+                    "toys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "x-element-ref": {"collection": "toys", "key": "toy_id"},
+                    },
+                },
+            }
+        },
+    }
+    (skill_dir / "schema.json").write_text(json.dumps(schema))
+    mock_spec.spec_dict = {"openapi": "3.0.0", "paths": {}}
+    raw_spec = json.dumps(mock_spec.spec_dict, indent=2, ensure_ascii=False)
+    layout = json.dumps(schema, indent=2, ensure_ascii=False)
+
+    no_skill = _prompt_agent(
+        skill_dir, mock_spec, mock_operation, skill_enabled=False
+    ).system_prompt
+    assert layout in no_skill
+    assert "SKILL-BODY" not in no_skill
+    assert "skill" not in no_skill.lower()
+    # Exactly one section added to the v1 no_skill prompt.
+    before = render_system_prompt(mock_spec, raw_spec=raw_spec)
+    start = no_skill.index("## Store Layout")
+    end = no_skill.index("## Core Principles")
+    assert no_skill[:start] + no_skill[end:] == before
+    assert layout in no_skill[start:end]
+
+    full = _prompt_agent(
+        skill_dir, mock_spec, mock_operation, skill_enabled=True
+    ).system_prompt
+    assert full == render_system_prompt(mock_spec)
+    assert "Store Layout" not in full and "x-element-ref" not in full
