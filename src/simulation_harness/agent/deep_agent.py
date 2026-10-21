@@ -353,14 +353,16 @@ class DeepAgent:
         # plus the layout of the store it writes into (schema.json), and nothing else of the
         # skill. Without the layout it could not know the store's composite keys or id-only
         # references, so part of the full-vs-no_skill gap was the missing layout (plan 28 S1).
-        # `spec_only` additionally drops every state-tool instruction: there are none to call.
+        # `spec_only` additionally drops every state-tool instruction and the store layout:
+        # there is no store and no state tool to call.
         if skill_enabled:
             self.system_prompt = render_system_prompt(spec)
         else:
             self.system_prompt = render_system_prompt(
                 spec,
                 raw_spec=json.dumps(spec.spec_dict, indent=2, ensure_ascii=False),
-                store_schema=_store_layout(skill_dir),
+                # The layout is for no_skill only: spec_only has no store to lay out.
+                store_schema=_store_layout(skill_dir) if state_enabled else None,
                 stateless=not state_enabled,
             )
 

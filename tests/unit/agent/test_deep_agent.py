@@ -713,3 +713,46 @@ async def test_spec_only_generate_response_passes_no_registry(
     assert result == {"id": "u1"}
     config = agent.agent.ainvoke.await_args.kwargs["config"]
     assert "store_registry" not in config["configurable"]
+
+
+def test_spec_only_prompt_has_no_store_layout(
+    tmp_path: Path, mock_spec: MagicMock, mock_operation: MagicMock
+) -> None:
+    """S1 is for `no_skill` only: `spec_only` has no store, so even with a schema.json in the
+    skill dir its prompt is the stateless raw-spec prompt with no Store Layout section."""
+    import json
+
+    from simulation_harness.agent.prompts import render_system_prompt
+
+    skill_dir = tmp_path / "petstore"
+    skill_dir.mkdir()
+    (skill_dir / "schema.json").write_text(
+        json.dumps({"type": "object", "$defs": {"Pet": {"x-primary-key": "pet_key"}}})
+    )
+    mock_spec.spec_dict = {"openapi": "3.0.0", "paths": {}}
+    with (
+        patch("simulation_harness.agent.deep_agent.ChatOpenAI", return_value=Mock()),
+        patch("simulation_harness.agent.deep_agent.StoreRegistry"),
+        patch("simulation_harness.agent.deep_agent.create_agent", return_value=Mock()),
+    ):
+        agent = DeepAgent(
+            api_key=SecretStr("test-key"),
+            model="gpt-4",
+            temperature=0.0,
+            max_tokens=1000,
+            base_url=None,
+            spec=mock_spec,
+            operations=[mock_operation],
+            skill_dir=skill_dir,
+            skill_enabled=False,
+            state_enabled=False,
+        )
+
+    prompt = agent.system_prompt
+    assert "Store Layout" not in prompt
+    assert "x-primary-key" not in prompt
+    assert prompt == render_system_prompt(
+        mock_spec,
+        raw_spec=json.dumps(mock_spec.spec_dict, indent=2, ensure_ascii=False),
+        stateless=True,
+    )
