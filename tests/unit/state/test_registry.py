@@ -197,4 +197,23 @@ class TestDropAll:
         assert registry.thread_count() == 0
 
 
+class TestExisting:
+    """``existing`` looks a thread store up without creating one."""
+
+    def test_existing_returns_none_for_unknown_thread(
+        self, registry: StoreRegistry
+    ) -> None:
+        assert registry.existing("default") is None
+        assert registry.thread_count() == 0
+
+    def test_existing_returns_live_store(self, registry: StoreRegistry) -> None:
+        store = registry.for_thread("default")
+        assert registry.existing("default") is store
+
+    def test_existing_is_none_after_drop_all(self, registry: StoreRegistry) -> None:
+        registry.for_thread("default")
+        registry.drop_all()
+        assert registry.existing("default") is None
+
+
 # Made with Bob

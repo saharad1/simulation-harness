@@ -345,5 +345,39 @@ class SimulationHost:
 
             await record.instance.reset_session()
 
+    async def update_record(
+        self,
+        *,
+        store: str,
+        record_id: str,
+        patch: dict[str, Any],
+        thread_id: str,
+    ) -> dict[str, Any]:
+        """Patch one record of the live thread store without resetting the session.
+
+        Raises:
+            SimulationNotFoundError: no simulation declared
+            SimulationNotReadyError: simulation not yet READY
+            SimulationBusyError: tool calls are in flight (queue_depth > 0)
+            NoLiveStoreError / RecordNotFoundError / RecordValidationError: see
+                `SimulationInstance.update_record`
+        """
+        async with self._lifecycle_lock:
+            record = self._record
+            if record is None:
+                raise SimulationNotFoundError("No simulation found")
+            if record.status != SimulationStatus.READY or record.instance is None:
+                raise SimulationNotReadyError(
+                    name=record.name, status=record.status.value
+                )
+
+            session_state = record.instance.get_session_state()
+            if session_state.queue_depth > 0:
+                raise SimulationBusyError(queue_depth=session_state.queue_depth)
+
+            return record.instance.update_record(
+                store, record_id, patch, thread_id=thread_id
+            )
+
 
 # Made with Bob

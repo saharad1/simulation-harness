@@ -695,4 +695,69 @@ async def test_start_simulation_missing_artifacts_raises(
     assert await host.get_record() is None
 
 
+def _ready_host(queue_depth: int = 0) -> tuple[SimulationHost, MagicMock]:
+    from simulation_harness.core.simulation_record import SimulationRecord
+    from simulation_harness.models.domain import SessionState
+
+    host = SimulationHost()
+    instance = MagicMock()
+    instance.get_session_state.return_value = SessionState(
+        tool_call_count=3,
+        max_messages=100,
+        idle_timeout_seconds=3600,
+        last_activity=None,
+        queue_depth=queue_depth,
+        max_queue_depth=8,
+    )
+    instance.update_record.return_value = {"bill_id": "B1", "status": "Paid"}
+    instance.reset_session = AsyncMock()
+    record = SimulationRecord.declare(name="demo")
+    record.transition(SimulationStatus.INITIALIZING, phase="agent_init")
+    record.mark_ready(instance)
+    host._record = record
+    return host, instance
+
+
+class TestUpdateRecord:
+    async def test_delegates_to_instance_without_reset(self) -> None:
+        host, instance = _ready_host()
+        out = await host.update_record(
+            store="bills", record_id="B1", patch={"status": "Paid"}, thread_id="default"
+        )
+        assert out == {"bill_id": "B1", "status": "Paid"}
+        instance.update_record.assert_called_once_with(
+            "bills", "B1", {"status": "Paid"}, thread_id="default"
+        )
+        instance.reset_session.assert_not_awaited()
+
+    async def test_no_simulation_raises(self) -> None:
+        from simulation_harness.utils.errors import SimulationNotFoundError
+
+        with pytest.raises(SimulationNotFoundError):
+            await SimulationHost().update_record(
+                store="bills", record_id="B1", patch={}, thread_id="default"
+            )
+
+    async def test_not_ready_raises(self) -> None:
+        from simulation_harness.core.simulation_record import SimulationRecord
+        from simulation_harness.utils.errors import SimulationNotReadyError
+
+        host = SimulationHost()
+        host._record = SimulationRecord.declare(name="demo")
+        with pytest.raises(SimulationNotReadyError):
+            await host.update_record(
+                store="bills", record_id="B1", patch={}, thread_id="default"
+            )
+
+    async def test_busy_raises_and_does_not_write(self) -> None:
+        from simulation_harness.utils.errors import SimulationBusyError
+
+        host, instance = _ready_host(queue_depth=1)
+        with pytest.raises(SimulationBusyError):
+            await host.update_record(
+                store="bills", record_id="B1", patch={}, thread_id="default"
+            )
+        instance.update_record.assert_not_called()
+
+
 # Made with Bob

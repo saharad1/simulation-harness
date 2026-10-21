@@ -41,6 +41,14 @@ class StoreRegistry:
 
         return self._stores[thread_id]
 
+    def existing(self, thread_id: str) -> SimulationStore | None:
+        """Return the thread's live store, or None — never creates one.
+
+        Args:
+            thread_id: The thread identifier
+        """
+        return self._stores.get(thread_id)
+
     def reset(self, thread_id: str) -> None:
         """Reset a thread's store to seed state.
 

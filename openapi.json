@@ -233,6 +233,14 @@
       "SimulationResponse": {
         "description": "Response model for simulation status.",
         "properties": {
+          "components": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "Which simulator components are enabled: `skill` (SKILL.md loaded) and `state` (seed DB + state_* tools). Both true in normal operation; either false means the harness was started in an ablation configuration. Exposed so an evaluation can RECORD the configuration it measured instead of being told out-of-band.",
+            "title": "Components",
+            "type": "object"
+          },
           "created_at": {
             "description": "Timestamp when simulation was declared",
             "format": "date-time",
@@ -270,6 +278,27 @@
           "progress": {
             "$ref": "#/components/schemas/ProgressPayload",
             "description": "Creation progress info"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "description": "What produced this simulation's answers: `skill_generation` (the skills-store directory loaded, e.g. `tau2-retail_261020-165700`, populated when ready), `harness_commit` and `harness_dirty` (this process's git checkout; None when not a checkout), and the runtime LLM settings `simulation_model`, `request_timeout_seconds`, `max_retries`. Exposed like `components` and `sampling`, so an evaluation records the exact skill and code it measured instead of a bare skill name.",
+            "title": "Provenance",
+            "type": "object"
+          },
+          "sampling": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "Decoding parameters this process is serving: `temperature` (and `max_tokens` when set). Exposed for the same reason as `components` \u2014 two runs that differ only in temperature are otherwise indistinguishable in their artifacts, so a determinism study could not tell a sampled run from a greedy one after the fact. None means the harness could not read its config, which is reported as unknown rather than assumed to be 0.",
+            "title": "Sampling",
+            "type": "object"
           },
           "session_state": {
             "anyOf": [
@@ -770,6 +799,84 @@
           }
         },
         "summary": "Get simulation state",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/v1/simulation/state/{store}/{record_id}": {
+      "patch": {
+        "description": "Merge the request body (a partial record) into one record of the thread's live in-memory store and return the updated record. Unlike `PUT /simulation/database`, this does **not** reset the session: the agent thread, its context and the tool-call counter are kept, so a client can mirror an out-of-band change (e.g. a payment settled elsewhere) mid-conversation. db.json on disk is unchanged.\n\nThe merged record is validated against `schema.json`; a violation returns 422 and changes nothing. The primary key cannot be changed. The thread's store must already exist (it is created by the thread's first tool call or state read); otherwise 409. Also 409 while tool calls are in flight.",
+        "operationId": "patch_simulation_record_api_v1_simulation_state__store___record_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "store",
+            "required": true,
+            "schema": {
+              "title": "Store",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "default": "default",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Simulation Record Api V1 Simulation State  Store   Record Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Record updated; returns the full record"
+          },
+          "404": {
+            "description": "No simulation, unknown store, or unknown record"
+          },
+          "409": {
+            "description": "No live store for the thread, or tool calls in flight"
+          },
+          "422": {
+            "description": "Patched record violates schema.json"
+          },
+          "503": {
+            "description": "Simulation exists but is not ready yet"
+          }
+        },
+        "summary": "Patch one record of the live simulation state",
         "tags": [
           "simulations"
         ]

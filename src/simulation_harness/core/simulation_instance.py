@@ -15,9 +15,17 @@ from simulation_harness.models.domain import (
     ToolCallResult,
 )
 from simulation_harness.openapi.parser import OpenAPISpec
+from simulation_harness.state.errors import (
+    NotFoundError,
+    UnknownStoreError,
+    ValidationError,
+)
 from simulation_harness.utils.errors import (
     SessionExpiredError,
     ConcurrentQueueFullError,
+    NoLiveStoreError,
+    RecordNotFoundError,
+    RecordValidationError,
 )
 from simulation_harness.utils.logging import get_logger
 
@@ -253,6 +261,53 @@ class SimulationInstance:
 
         store = store_registry.for_thread(thread_id)
         return store.snapshot()
+
+    def update_record(
+        self,
+        store: str,
+        record_id: str,
+        patch: dict[str, Any],
+        thread_id: str = "default",
+    ) -> dict[str, Any]:
+        """Merge ``patch`` into one record of the thread's live store.
+
+        Writes the store only: the agent thread, its messages and the tool-call counter are
+        untouched, unlike `reset_session`. The merged record is validated against
+        schema.json before it replaces the old one, so a rejected patch changes nothing.
+
+        Returns:
+            The updated record.
+
+        Raises:
+            NoLiveStoreError: the thread has no live store (it is never created here)
+            RecordNotFoundError: unknown store or record
+            RecordValidationError: the merged record violates schema.json, or the patch
+                would change the record's primary key
+        """
+        registry = getattr(getattr(self, "_agent", None), "store_registry", None)
+        live = registry.existing(thread_id) if registry is not None else None
+        if live is None:
+            raise NoLiveStoreError(thread_id=thread_id)
+        try:
+            pk = live.primary_key(store)
+            if pk in patch and str(patch[pk]) != str(record_id):
+                raise RecordValidationError(
+                    store=store,
+                    message=f"Patch would change primary key '{pk}' of record "
+                    f"'{record_id}' in store '{store}'",
+                )
+            updated: dict[str, Any] = live.update(store, record_id, patch)
+        except (UnknownStoreError, NotFoundError) as e:
+            raise RecordNotFoundError(
+                store=store, record_id=record_id, message=str(e)
+            ) from e
+        except ValidationError as e:
+            raise RecordValidationError(store=store, message=str(e)) from e
+        logger.info(
+            f"Record patched: store={store} id={record_id} thread={thread_id} "
+            f"fields={sorted(patch)}"
+        )
+        return updated
 
     async def shutdown(self) -> None:
         """Shutdown the instance and cleanup resources."""

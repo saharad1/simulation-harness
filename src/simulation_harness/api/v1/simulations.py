@@ -456,6 +456,41 @@ async def get_simulation_state(
     return record.instance.get_state_snapshot(thread_id)
 
 
+@router.patch(
+    "/simulation/state/{store}/{record_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Patch one record of the live simulation state",
+    description=(
+        "Merge the request body (a partial record) into one record of the thread's live "
+        "in-memory store and return the updated record. Unlike `PUT /simulation/database`, "
+        "this does **not** reset the session: the agent thread, its context and the "
+        "tool-call counter are kept, so a client can mirror an out-of-band change (e.g. a "
+        "payment settled elsewhere) mid-conversation. db.json on disk is unchanged.\n\n"
+        "The merged record is validated against `schema.json`; a violation returns 422 and "
+        "changes nothing. The primary key cannot be changed. The thread's store must "
+        "already exist (it is created by the thread's first tool call or state read); "
+        "otherwise 409. Also 409 while tool calls are in flight."
+    ),
+    responses={
+        200: {"description": "Record updated; returns the full record"},
+        404: {"description": "No simulation, unknown store, or unknown record"},
+        409: {"description": "No live store for the thread, or tool calls in flight"},
+        422: {"description": "Patched record violates schema.json"},
+        503: {"description": "Simulation exists but is not ready yet"},
+    },
+)
+async def patch_simulation_record(
+    store: str,
+    record_id: str,
+    body: dict[str, Any],
+    simulation_host: SimulationHostDep,
+    thread_id: str = "default",
+) -> dict[str, Any]:
+    return await simulation_host.update_record(
+        store=store, record_id=record_id, patch=body, thread_id=thread_id
+    )
+
+
 @router.get(
     "/simulation/database",
     status_code=status.HTTP_200_OK,
