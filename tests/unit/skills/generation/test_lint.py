@@ -196,6 +196,32 @@ def test_explicit_path_into_an_id_only_element_is_rejected() -> None:
     assert "sets `price`" in error
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- Write `orders[order_id].items[i].options` from the new variant.",
+    ],
+)
+def test_explicit_path_into_an_id_only_element_as_write_target_is_rejected(
+    text: str,
+) -> None:
+    assert len(id_only_element_writes(text, id_only_refs_from_ir(_ir()))) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # v2 retail rich d2 try 1 (plan 28 L1): the element's price is read, not written.
+        "- Append to `orders[order_id].payment_history` an entry; set `amount` to the sum "
+        "of `orders[order_id].items[i].price` over the returned items.",
+        "- Set `amount` = sum of `orders[order_id].items[i].price`.",
+        "- Store the refund, computed from `Order.items[i].price`, in `amount`.",
+    ],
+)
+def test_reading_an_element_path_on_a_write_line_passes(text: str) -> None:
+    assert id_only_element_writes(text, id_only_refs_from_ir(_ir())) == []
+
+
 def test_refs_from_schema_match_refs_from_ir() -> None:
     ir_refs = [(r.label, r.key, r.target) for r in id_only_refs_from_ir(_ir())]
     schema_refs = [

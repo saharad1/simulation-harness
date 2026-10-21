@@ -158,6 +158,10 @@ _NEGATED_WRITE = re.compile(
     rf"{_WRITE_VERB}\b"
 )
 _BACKTICKED = re.compile(r"`([^`]+)`")
+#: "Set `x`", "write the `x`": a backticked path that is the object of a write verb.
+_WRITES_PATH = re.compile(
+    rf"(?i)\b{_WRITE_VERB}\b\s+(?:(?:the|that|this|each|its|new)\s+)?`(?P<path>[^`]+)`"
+)
 
 
 def _mentions(ref: IdOnlyRef) -> re.Pattern[str]:
@@ -212,12 +216,14 @@ def id_only_element_writes(text: str, refs: Iterable[IdOnlyRef]) -> list[str]:
                 continue
             tokens = _BACKTICKED.findall(line)
             negated = bool(_NEGATED_WRITE.search(line))
-            # A path into an element, on a line that writes it.
-            if not negated and re.search(rf"(?i)\b{_WRITE_VERB}\b", line):
-                for token in tokens:
-                    m = into.match(token.strip())
-                    if m and m.group("field") != ref.key:
-                        report(ref, m.group("field"), i)
+            # A path into an element, as the object of a write verb ("Set `items[i].price`
+            # to ..."); a path only read on a write line ("set `amount` to the sum of
+            # `items[i].price`") is not a write of it (plan 28 L1).
+            if not negated:
+                for m in _WRITES_PATH.finditer(line):
+                    into_m = into.match(m.group("path").strip())
+                    if into_m and into_m.group("field") != ref.key:
+                        report(ref, into_m.group("field"), i)
             if any(mention.match(t.strip()) for t in tokens):
                 window_end, on_element = i + _CONTEXT_LINES, False
             elif any(
