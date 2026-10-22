@@ -106,6 +106,9 @@ class Field(BaseModel):
     name: str
     type: str
     required: bool = False
+    # Derived in code by the identity pass (the spec declared the field with a
+    # null alternative) and re-pinned in compose_data_model; schema.py stamps it.
+    nullable: bool = False
     enum: list[str] | None = None
     format: str | None = None
     description: str | None = None

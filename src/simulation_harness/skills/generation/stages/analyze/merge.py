@@ -195,6 +195,21 @@ def _pin_element_shapes(fields: list[Field], derived: DerivedEntity) -> list[Fie
     ]
 
 
+def _pin_nullability(fields: list[Field], derived: DerivedEntity) -> list[Field]:
+    """Re-assert the derived nullability on each field, as for element shapes.
+
+    Whether ``schema.json`` admits null is contract: the enrich LLM omitting the
+    flag (or setting it on a field the spec never made nullable) must not move it.
+    """
+    nullable = set(derived.nullable_fields)
+    return [
+        f.model_copy(update={"nullable": f.name in nullable})
+        if (f.name in nullable) != f.nullable
+        else f
+        for f in fields
+    ]
+
+
 def compose_data_model(
     api_name: str,
     identity: IdentityModel,
@@ -248,7 +263,7 @@ def compose_data_model(
                     "name": d.name,
                     "collection": d.collection,
                     "primary_key": d.primary_key,
-                    "fields": _pin_element_shapes(e.fields, d),
+                    "fields": _pin_nullability(_pin_element_shapes(e.fields, d), d),
                 }
             )
         )

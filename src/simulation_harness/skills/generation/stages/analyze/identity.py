@@ -231,6 +231,9 @@ class DerivedEntity:
     fields: tuple[tuple[str, str], ...]
     sources: tuple[str, ...]
     elements: tuple[tuple[str, ElementShape], ...] = ()
+    # Sorted names of the fields some source schema declared with a null
+    # alternative. See ``_strip_null``.
+    nullable_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,9 +265,37 @@ class _Cluster:
     # without provenance, "is this element a subset of its target?" is circular
     # and trivially true, so a link object could never be detected.
     field_sources: dict[str, set[str]] = field(default_factory=dict)
+    # A field is nullable if ANY source declares it so: storage must hold every
+    # value some response can return.
+    nullable: set[str] = field(default_factory=set)
+
+
+def _strip_null(prop: dict) -> tuple[dict, bool]:
+    """The schema under a nullable declaration, and whether it declared null.
+
+    Two spellings: ``{"type": ["string", "null"]}`` and ``{"anyOf": [{...},
+    {"type": "null"}]}`` (pydantic's ``Optional[X]``). Neither has a string
+    ``type`` key, so without this both fell through ``_json_type`` to
+    ``"string"`` and the nullability was lost before any stage could see it.
+    """
+    declared = prop.get("type")
+    if isinstance(declared, list) and "null" in declared:
+        rest = [t for t in declared if t != "null"]
+        return ({**prop, "type": rest[0]} if len(rest) == 1 else prop), True
+    variants = prop.get("anyOf") or prop.get("oneOf")
+    if isinstance(variants, list):
+        non_null = [
+            v for v in variants if not (isinstance(v, dict) and v.get("type") == "null")
+        ]
+        if len(non_null) < len(variants):
+            if len(non_null) == 1 and isinstance(non_null[0], dict):
+                return non_null[0], True
+            return prop, True
+    return prop, False
 
 
 def _json_type(prop: dict) -> str:
+    prop, _ = _strip_null(prop)
     declared = prop.get("type")
     if isinstance(declared, str):
         return declared
@@ -395,6 +426,8 @@ def _absorb(
                     prop_name, _json_type(prop if isinstance(prop, dict) else {})
                 )
                 cluster.field_sources.setdefault(prop_name, set()).add(source)
+                if isinstance(prop, dict) and _strip_null(prop)[1]:
+                    cluster.nullable.add(prop_name)
                 if isinstance(prop, dict):
                     # setdefault, and iteration over sorted names, so a property
                     # described by two source schemas resolves the same way every
@@ -799,6 +832,7 @@ def derive_identity(
             elements=tuple(
                 sorted(element_shapes.get(noun, {}).items(), key=lambda kv: kv[0])
             ),
+            nullable_fields=tuple(sorted(clusters[noun].nullable)),
         )
         for noun in sorted(clusters)
     )

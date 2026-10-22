@@ -265,6 +265,42 @@ def _stamp_element_shapes(entity_def: dict, entity: Entity) -> None:
             prop["x-element-ref"] = ref
 
 
+def _admits_null(prop: dict) -> bool:
+    declared = prop.get("type")
+    if declared == "null" or (isinstance(declared, list) and "null" in declared):
+        return True
+    variants = prop.get("anyOf") or prop.get("oneOf")
+    return isinstance(variants, list) and any(
+        isinstance(v, dict) and v.get("type") == "null" for v in variants
+    )
+
+
+def _stamp_nullability(entity_def: dict, entity: Entity) -> None:
+    """Admit null on each field the spec declared nullable.
+
+    The prompt sees ``nullable`` on the entity but is free to drop it, and a
+    property that rejects null makes every write clearing that field fail at the
+    live store. Runs after the element stamp, whose type check expects a plain
+    ``type`` string; a property that already admits null is left as written.
+    """
+    props = entity_def.get("properties")
+    if not isinstance(props, dict):
+        return
+    for field in entity.fields:
+        prop = props.get(field.name)
+        if not field.nullable or not isinstance(prop, dict) or _admits_null(prop):
+            continue
+        declared = prop.get("type")
+        if isinstance(declared, str | list):
+            types = [declared] if isinstance(declared, str) else list(declared)
+            prop["type"] = [*types, "null"]
+            enum = prop.get("enum")
+            if isinstance(enum, list) and None not in enum:
+                enum.append(None)
+        else:
+            props[field.name] = {"anyOf": [prop, {"type": "null"}]}
+
+
 def enforce_contract(schema: dict, ir: SpecModel) -> dict:
     """Stamp the derived contract onto the schema.
 
@@ -277,7 +313,7 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
     shape falls through to ``validate_schema`` as repair feedback instead of
     an exception escaping the repair loop.
 
-    Stamps three things:
+    Stamps four things:
     - Top level: ``required`` is set to exactly ``store_metadata.collections``
       and ``additionalProperties`` to ``False``, so ``db.json``'s collection
       set is checked against the IR too (via ``validate_schema_and_db``, in
@@ -292,6 +328,8 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
       stage is free to populate an array in a shape no other stage agreed to.
       Stamping it makes ``validate_schema_and_db`` reject the mismatch and feed
       it back as repair feedback, with no seed-prompt change at all.
+    - Per field the spec declared nullable: null is admitted on its property
+      (see :func:`_stamp_nullability`).
     """
     if isinstance(schema, dict):
         schema["required"] = list(ir.store_metadata.collections)
@@ -308,6 +346,7 @@ def enforce_contract(schema: dict, ir: SpecModel) -> dict:
         entity = entities.get(collection)
         if entity is not None:
             _stamp_element_shapes(entity_def, entity)
+            _stamp_nullability(entity_def, entity)
     return schema
 
 
