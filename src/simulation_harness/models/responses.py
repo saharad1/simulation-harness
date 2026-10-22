@@ -53,7 +53,9 @@ class SimulationResponse(BaseModel):
         description="Which simulator components are enabled: `skill` (SKILL.md loaded) and "
         "`state` (seed DB + state_* tools). Both true in normal operation; either false means "
         "the harness was started in an ablation configuration. Exposed so an evaluation can "
-        "RECORD the configuration it measured instead of being told out-of-band.",
+        "RECORD the configuration it measured instead of being told out-of-band. The status "
+        "endpoint also reports `llm_no_cache`: whether the runtime simulator's LLM requests "
+        "bypass the gateway response cache (HARNESS_LLM_NO_CACHE).",
     )
     sampling: dict[str, Optional[float]] = Field(
         # Annotated so the lambda's inferred type is dict[str, float | None] rather than

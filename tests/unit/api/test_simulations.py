@@ -1334,4 +1334,56 @@ class TestSpecOnlyWithoutStore:
         ):
             resp = client.get("/api/v1/simulation")
         assert resp.status_code == 200
-        assert resp.json()["components"] == {"skill": False, "state": False}
+        assert resp.json()["components"] == {
+            "skill": False,
+            "state": False,
+            "llm_no_cache": False,
+        }
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(None, False), ("", False), ("0", False), ("1", True), ("true", True)],
+    )
+    @pytest.mark.parametrize("config_loaded", [True, False])
+    async def test_status_reports_runtime_no_cache(
+        self,
+        client: TestClient,
+        mock_simulation_host: MagicMock,
+        mock_simulation_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str | None,
+        expected: bool,
+        config_loaded: bool,
+    ) -> None:
+        """C1: `llm_no_cache` is what the runtime client sends, so an evaluation can prove
+        its simulator turns were sampled rather than replayed from the gateway cache."""
+        from unittest.mock import patch
+
+        from simulation_harness.skills.generation.llm import no_cache_kwargs
+
+        if value is None:
+            monkeypatch.delenv("HARNESS_LLM_NO_CACHE", raising=False)
+        else:
+            monkeypatch.setenv("HARNESS_LLM_NO_CACHE", value)
+        cfg = MagicMock()
+        cfg.ablation.skill = True
+        cfg.ablation.state = True
+        cfg.llm.temperature = 0.0
+        cfg.llm.max_tokens = None
+        mock_simulation_host.get_record = AsyncMock(
+            return_value=self._ready(mock_simulation_instance)
+        )
+        get_config = (
+            patch("simulation_harness.api.v1.simulations.get_config", return_value=cfg)
+            if config_loaded
+            else patch(
+                "simulation_harness.api.v1.simulations.get_config",
+                side_effect=RuntimeError("config not loaded"),
+            )
+        )
+        with get_config:
+            resp = client.get("/api/v1/simulation")
+        assert resp.status_code == 200
+        assert resp.json()["components"]["llm_no_cache"] is expected
+        # Same source as the request kwargs, not a second reading of the variable.
+        assert expected == bool(no_cache_kwargs())

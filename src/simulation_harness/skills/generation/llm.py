@@ -36,7 +36,8 @@ _NO_CACHE_ENV_VAR = "HARNESS_LLM_NO_CACHE"
 _TRUTHY = {"1", "true", "yes"}
 
 
-def _no_cache_requested() -> bool:
+def no_cache_requested() -> bool:
+    """Whether this process's LLM clients opt out of the gateway cache (HARNESS_LLM_NO_CACHE)."""
     # Resolved through config.env_source so this variable has the same ingress as
     # every other HARNESS_* one: process env first, then `.env` (issue #13).
     return (harness_env(_NO_CACHE_ENV_VAR) or "").strip().lower() in _TRUTHY
@@ -48,7 +49,7 @@ def no_cache_kwargs() -> dict[str, Any]:
     ``{}`` unless HARNESS_LLM_NO_CACHE is truthy. The one mechanism every LLM client of
     the harness uses, so generation and the runtime simulator cannot drift apart.
     """
-    if _no_cache_requested():
+    if no_cache_requested():
         return {"extra_body": {"cache": {"no-cache": True}}}
     return {}
 

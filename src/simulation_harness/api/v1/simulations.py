@@ -25,6 +25,7 @@ from simulation_harness.models.responses import (
 )
 from simulation_harness.core.skill_registry import _PINNED_ABLATION_RE
 from simulation_harness.openapi.parser import OpenAPISpec, validate_openapi_dict
+from simulation_harness.skills.generation.llm import no_cache_requested
 from simulation_harness.skills.generation.naming import (
     GENERATION_SEP,
     is_generation_dirname,
@@ -110,6 +111,10 @@ def _record_to_response(
     except RuntimeError:
         components = {"skill": True, "state": True}
         sampling = {"temperature": None}
+    # C1: whether the runtime simulator's requests bypass the gateway's response cache, read
+    # through the same helper that builds those requests. Without it, a turn identical to an
+    # earlier run's can be answered from that run's cache instead of being sampled.
+    components["llm_no_cache"] = no_cache_requested()
     progress = ProgressPayload(
         phase=record.progress.phase,
         started_at=record.progress.started_at,
