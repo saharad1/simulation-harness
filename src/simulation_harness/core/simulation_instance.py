@@ -331,16 +331,22 @@ class SimulationInstance:
             The updated record.
 
         Raises:
+            StoreDisabledError: the store is disabled (`spec_only`), as for PUT /database
             NoLiveStoreError: the thread has no live store (it is never created here)
             RecordNotFoundError: unknown store or record
             RecordValidationError: the merged record violates schema.json, or the patch
                 would change the record's primary key
         """
+        if not self.state_enabled:
+            raise StoreDisabledError()
         registry = getattr(getattr(self, "_agent", None), "store_registry", None)
         live = registry.existing(thread_id) if registry is not None else None
         if live is None:
             raise NoLiveStoreError(thread_id=thread_id)
         try:
+            # `primary_key` does not check the store; `get` does, so an unknown store is
+            # a 404 even when the patch names a key.
+            live.get(store, record_id)
             pk = live.primary_key(store)
             if pk in patch and str(patch[pk]) != str(record_id):
                 raise RecordValidationError(

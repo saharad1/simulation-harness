@@ -457,7 +457,10 @@ async def get_simulation_state(
     responses={
         200: {"description": "Record updated; returns the full record"},
         404: {"description": "No simulation, unknown store, or unknown record"},
-        409: {"description": "No live store for the thread, or tool calls in flight"},
+        409: {
+            "description": "No live store for the thread, tool calls in flight, or "
+            "no store (spec_only): code=no_store"
+        },
         422: {"description": "Patched record violates schema.json"},
         503: {"description": "Simulation exists but is not ready yet"},
     },

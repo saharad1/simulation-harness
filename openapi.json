@@ -864,7 +864,7 @@
             "description": "No simulation, unknown store, or unknown record"
           },
           "409": {
-            "description": "No live store for the thread, or tool calls in flight"
+            "description": "No live store for the thread, tool calls in flight, or no store (spec_only): code=no_store"
           },
           "422": {
             "description": "Patched record violates schema.json"

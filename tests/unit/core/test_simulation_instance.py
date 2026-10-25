@@ -16,6 +16,7 @@ from simulation_harness.utils.errors import (
     NoLiveStoreError,
     RecordNotFoundError,
     RecordValidationError,
+    StoreDisabledError,
 )
 from typing import Any
 
@@ -711,6 +712,23 @@ class TestUpdateRecord:
             instance_with_store.update_record(
                 "reservations", "reservation_seed_001", {"id": "other"}
             )
+
+    def test_unknown_store_is_not_found_even_when_patch_names_a_key(
+        self, instance_with_store: SimulationInstance
+    ) -> None:
+        """v2's `primary_key` does not check the store, so the store check must come first."""
+        instance_with_store.get_state_snapshot("default")
+        with pytest.raises(RecordNotFoundError):
+            instance_with_store.update_record("invoices", "x", {"id": "other"})
+
+    def test_spec_only_raises_store_disabled(self, mock_spec: SimulationSpec) -> None:
+        """`spec_only` has no store: refused like PUT /simulation/database, not 'no live store'."""
+        with patch("simulation_harness.core.simulation_instance.DeepAgent"):
+            instance = create_instance(
+                mock_spec, skill_enabled=False, state_enabled=False
+            )
+        with pytest.raises(StoreDisabledError):
+            instance.update_record("reservations", "r1", {"party_size": 4})
 
 
 # Made with Bob
