@@ -30,8 +30,11 @@ from simulation_harness.core.simulation_record import SimulationStatus
 from simulation_harness.utils.errors import (
     ConcurrentQueueFullError,
     DatabaseValidationError,
+    NoLiveStoreError,
     OpenAPIValidationError,
     PortInUseError,
+    RecordNotFoundError,
+    RecordValidationError,
     SessionExpiredError,
     SimulationAlreadyExistsError,
     SimulationArtifactsNotFoundError,
@@ -553,6 +556,36 @@ async def store_disabled_exception_handler(
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": str(exc), "code": exc.code},
+    )
+
+
+@app.exception_handler(NoLiveStoreError)
+async def no_live_store_exception_handler(
+    request: Request, exc: NoLiveStoreError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc), "thread_id": exc.thread_id},
+    )
+
+
+@app.exception_handler(RecordNotFoundError)
+async def record_not_found_exception_handler(
+    request: Request, exc: RecordNotFoundError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": str(exc), "store": exc.store, "record_id": exc.record_id},
+    )
+
+
+@app.exception_handler(RecordValidationError)
+async def record_validation_exception_handler(
+    request: Request, exc: RecordValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": str(exc), "store": exc.store},
     )
 
 

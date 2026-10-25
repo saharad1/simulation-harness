@@ -146,4 +146,36 @@ class SimulationArtifactsNotFoundError(Exception):
         )
 
 
+class NoLiveStoreError(Exception):
+    """Raised when a record patch targets a thread that has no live store.
+
+    Patching never creates a store: a fresh one would be seeded from db.json, so the patch
+    would silently land on a state the caller never observed.
+    """
+
+    def __init__(self, *, thread_id: str) -> None:
+        self.thread_id = thread_id
+        super().__init__(
+            f"No live store for thread '{thread_id}'; it is created on the thread's "
+            "first tool call or state read"
+        )
+
+
+class RecordNotFoundError(Exception):
+    """Raised when a record patch names an unknown store or record."""
+
+    def __init__(self, *, store: str, record_id: str, message: str) -> None:
+        self.store = store
+        self.record_id = record_id
+        super().__init__(message)
+
+
+class RecordValidationError(Exception):
+    """Raised when a patched record would violate schema.json."""
+
+    def __init__(self, *, store: str, message: str) -> None:
+        self.store = store
+        super().__init__(message)
+
+
 # Made with Bob

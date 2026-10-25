@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,7 +10,13 @@ from pydantic import SecretStr
 
 from simulation_harness.core.simulation_instance import SimulationInstance
 from simulation_harness.models.domain import SimulationSpec
-from simulation_harness.utils.errors import ConcurrentQueueFullError
+from simulation_harness.state import StoreRegistry
+from simulation_harness.utils.errors import (
+    ConcurrentQueueFullError,
+    NoLiveStoreError,
+    RecordNotFoundError,
+    RecordValidationError,
+)
 from typing import Any
 
 
@@ -638,6 +645,72 @@ async def test_shutdown_stops_sidecar_when_present(
         await instance.shutdown()
 
         mock_sidecar.stop.assert_called_once()
+
+
+_FIXTURE_SKILL_DIR = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "restaurant-reservation-api"
+)
+
+
+@pytest.fixture
+def instance_with_store(
+    mock_spec: SimulationSpec, mock_agent: MagicMock
+) -> SimulationInstance:
+    """An instance whose agent carries a real StoreRegistry over the fixture skill."""
+    mock_agent.store_registry = StoreRegistry(_FIXTURE_SKILL_DIR)
+    with patch(
+        "simulation_harness.core.simulation_instance.DeepAgent", return_value=mock_agent
+    ):
+        return create_instance(mock_spec)
+
+
+class TestUpdateRecord:
+    def test_patches_live_store(self, instance_with_store: SimulationInstance) -> None:
+        instance_with_store.get_state_snapshot("default")  # creates the thread store
+        out = instance_with_store.update_record(
+            "reservations", "reservation_seed_001", {"party_size": 4}
+        )
+        assert out["party_size"] == 4
+        snap = instance_with_store.get_state_snapshot("default")
+        row = next(r for r in snap["reservations"] if r["id"] == "reservation_seed_001")
+        assert row["party_size"] == 4
+
+    def test_no_live_store_raises(
+        self, instance_with_store: SimulationInstance
+    ) -> None:
+        with pytest.raises(NoLiveStoreError):
+            instance_with_store.update_record(
+                "reservations", "reservation_seed_001", {"party_size": 4}
+            )
+
+    @pytest.mark.parametrize(
+        ("store", "record_id"),
+        [("reservations", "missing"), ("invoices", "reservation_seed_001")],
+    )
+    def test_unknown_store_or_record_raises_not_found(
+        self, instance_with_store: SimulationInstance, store: str, record_id: str
+    ) -> None:
+        instance_with_store.get_state_snapshot("default")
+        with pytest.raises(RecordNotFoundError):
+            instance_with_store.update_record(store, record_id, {"party_size": 4})
+
+    def test_schema_violation_raises_validation_error(
+        self, instance_with_store: SimulationInstance
+    ) -> None:
+        instance_with_store.get_state_snapshot("default")
+        with pytest.raises(RecordValidationError):
+            instance_with_store.update_record(
+                "reservations", "reservation_seed_001", {"party_size": "four"}
+            )
+
+    def test_primary_key_change_is_rejected(
+        self, instance_with_store: SimulationInstance
+    ) -> None:
+        instance_with_store.get_state_snapshot("default")
+        with pytest.raises(RecordValidationError):
+            instance_with_store.update_record(
+                "reservations", "reservation_seed_001", {"id": "other"}
+            )
 
 
 # Made with Bob

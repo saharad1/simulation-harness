@@ -233,6 +233,14 @@
       "SimulationResponse": {
         "description": "Response model for simulation status.",
         "properties": {
+          "components": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "Which simulator components are enabled: `skill` (SKILL.md loaded) and `state` (seed DB + state_* tools). Both true in normal operation; either false means the harness was started in an ablation configuration. Exposed so an evaluation can RECORD the configuration it measured instead of being told out-of-band. The status endpoint also reports `llm_no_cache`: whether the runtime simulator's LLM requests bypass the gateway response cache (HARNESS_LLM_NO_CACHE).",
+            "title": "Components",
+            "type": "object"
+          },
           "created_at": {
             "description": "Timestamp when simulation was declared",
             "format": "date-time",
@@ -270,6 +278,21 @@
           "progress": {
             "$ref": "#/components/schemas/ProgressPayload",
             "description": "Creation progress info"
+          },
+          "sampling": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "Decoding parameters this process is serving: `temperature` (and `max_tokens` when set). Exposed for the same reason as `components` \u2014 two runs that differ only in temperature are otherwise indistinguishable in their artifacts, so a determinism study could not tell a sampled run from a greedy one after the fact. None means the harness could not read its config, which is reported as unknown rather than assumed to be 0.",
+            "title": "Sampling",
+            "type": "object"
           },
           "session_state": {
             "anyOf": [
@@ -556,7 +579,7 @@
             "description": "No simulation exists"
           },
           "409": {
-            "description": "Tool calls are in flight; retry"
+            "description": "Tool calls are in flight; retry. Or no store (spec_only): code=no_store, db.json untouched"
           },
           "422": {
             "description": "Body does not validate against schema.json"
@@ -755,6 +778,9 @@
           "404": {
             "description": "No simulation exists"
           },
+          "409": {
+            "description": "No store (spec_only); body carries code=no_store"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -770,6 +796,84 @@
           }
         },
         "summary": "Get simulation state",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/v1/simulation/state/{store}/{record_id}": {
+      "patch": {
+        "description": "Merge the request body (a partial record) into one record of the thread's live in-memory store and return the updated record. Unlike `PUT /simulation/database`, this does **not** reset the session: the agent thread, its context and the tool-call counter are kept, so a client can mirror an out-of-band change (e.g. a payment settled elsewhere) mid-conversation. db.json on disk is unchanged.\n\nThe merged record is validated against `schema.json`; a violation returns 422 and changes nothing. The primary key cannot be changed. The thread's store must already exist (it is created by the thread's first tool call or state read); otherwise 409. Also 409 while tool calls are in flight.",
+        "operationId": "patch_simulation_record_api_v1_simulation_state__store___record_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "store",
+            "required": true,
+            "schema": {
+              "title": "Store",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "default": "default",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Simulation Record Api V1 Simulation State  Store   Record Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Record updated; returns the full record"
+          },
+          "404": {
+            "description": "No simulation, unknown store, or unknown record"
+          },
+          "409": {
+            "description": "No live store for the thread, or tool calls in flight"
+          },
+          "422": {
+            "description": "Patched record violates schema.json"
+          },
+          "503": {
+            "description": "Simulation exists but is not ready yet"
+          }
+        },
+        "summary": "Patch one record of the live simulation state",
         "tags": [
           "simulations"
         ]
@@ -802,6 +906,64 @@
           }
         },
         "summary": "List simulation tools",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/v1/simulation/usage": {
+      "delete": {
+        "description": "Zero the usage counters. Intended at the start of a measured task, so that the task's bill is readable from a single later GET even if the opening read was lost.",
+        "operationId": "reset_simulation_usage_api_v1_simulation_usage_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset Simulation Usage Api V1 Simulation Usage Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No simulation exists"
+          },
+          "503": {
+            "description": "Simulation exists but is not ready yet"
+          }
+        },
+        "summary": "Reset cumulative LLM usage counters",
+        "tags": [
+          "simulations"
+        ]
+      },
+      "get": {
+        "description": "Token counts and LLM wall-time spent by the simulator since the last reset, plus the model that spent them. Cumulative and monotonic: bracket a task with two reads and subtract to get that task's bill. Deliberately NOT attached to tool responses, which consumers diff. Survives `POST /simulation/reset` (resetting the world does not un-spend tokens); zero it with `DELETE /simulation/usage`.",
+        "operationId": "get_simulation_usage_api_v1_simulation_usage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Simulation Usage Api V1 Simulation Usage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No simulation exists"
+          },
+          "503": {
+            "description": "Simulation exists but is not ready yet"
+          }
+        },
+        "summary": "Get cumulative LLM usage for the active simulation",
         "tags": [
           "simulations"
         ]
