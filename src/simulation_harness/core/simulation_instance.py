@@ -18,6 +18,7 @@ from simulation_harness.models.domain import (
     ToolCallResult,
 )
 from simulation_harness.openapi.parser import OpenAPISpec
+from simulation_harness.openapi.reply_order import order_like_schema
 from simulation_harness.utils.errors import (
     SessionExpiredError,
     ConcurrentQueueFullError,
@@ -94,6 +95,7 @@ class SimulationInstance:
         # Parse OpenAPI spec and create agent
         parsed_spec = OpenAPISpec(spec.openapi_spec)
         operations = parsed_spec.operations
+        self._spec = parsed_spec
 
         self._agent = DeepAgent(
             api_key=api_key,
@@ -176,6 +178,13 @@ class SimulationInstance:
                 started = time.perf_counter()
                 response = await self._agent.generate_response(tool_name, arguments)
                 duration_ms = int((time.perf_counter() - started) * 1000)
+                operation = self._spec.get_operation_by_id(tool_name)
+                if operation is not None:
+                    response = order_like_schema(
+                        response,
+                        operation.get_success_response_schema(),
+                        self._spec.resolve_ref,
+                    )
                 content = json.dumps(response)
 
                 # Update session state on success
