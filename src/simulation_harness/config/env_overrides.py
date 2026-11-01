@@ -22,7 +22,12 @@ from .models import HarnessConfig, TransportType
 # path to the YAML itself, and the gateway cache toggle read by
 # skills/generation/llm.py.
 _NON_OVERRIDE_KEYS = frozenset(
-    {"HARNESS_CONFIG_PATH", "HARNESS_LLM_NO_CACHE", "HARNESS_LLM_LENIENT_JSON"},
+    {
+        "HARNESS_CONFIG_PATH",
+        "HARNESS_LLM_NO_CACHE",
+        "HARNESS_LLM_LENIENT_JSON",
+        "HARNESS_SKILL_INLINE",
+    },
 )
 
 _PROCESS_ENV_SOURCE = "process env"

@@ -165,6 +165,17 @@ def _lenient_json_enabled() -> bool:
     return os.environ.get(LENIENT_JSON_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
+#: Opt-in (env ``HARNESS_SKILL_INLINE``, read when the agent is built): skill conditions get
+#: SKILL.md's text appended to the system prompt instead of only a pointer to the file. For
+#: serving models that never open the file (gpt-4.1 read it in 0 of 26 airline tasks), so
+#: that a skill condition tests the skill's content, not whether the model calls read_file.
+SKILL_INLINE_ENV = "HARNESS_SKILL_INLINE"
+
+
+def _skill_inline_enabled() -> bool:
+    return os.environ.get(SKILL_INLINE_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
 def _extract_json(text: str) -> str | None:
     """The JSON object or array embedded in ``text``, or None.
 
@@ -560,6 +571,19 @@ class DeepAgent:
                 self._skill_md = staged[0].read_text(encoding="utf-8")
                 self._skill_md_path = (
                     "/" + staged[0].relative_to(self._skill_staging_dir).as_posix()
+                )
+            if self._skill_md is not None and _skill_inline_enabled():
+                # The skill's text in the prompt, for a serving model that never opens the
+                # file (the read tools stay available). Only for skill conditions: no_skill
+                # never reaches this branch with a skill to inline.
+                self.system_prompt = (
+                    f"{self.system_prompt}\n\n## The simulation skill\n\nThe full text of "
+                    f"{self._skill_md_path}, given here so you need not read the file:\n\n"
+                    f"{self._skill_md}"
+                )
+                logger.info(
+                    f"{SKILL_INLINE_ENV}: SKILL.md inlined into the system prompt "
+                    f"({len(self._skill_md)} chars, prompt now {len(self.system_prompt)})"
                 )
             backend = FilesystemBackend(root_dir=root_dir, virtual_mode=True)
 
