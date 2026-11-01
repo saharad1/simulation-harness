@@ -30,6 +30,8 @@ class _ScriptedChatModel(BaseChatModel):
 
     script: list[AIMessage]
     seen: list[list[dict]] = []
+    #: The system prompt of each call (kept out of `seen`, whose tests index past it).
+    system_seen: list[str] = []
     cursor: int = 0
 
     @property
@@ -46,6 +48,9 @@ class _ScriptedChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
+        self.system_seen.append(
+            next((str(m.content) for m in messages if m.type == "system"), "")
+        )
         self.seen.append(
             [
                 {"type": m.type, "content": m.content}
@@ -105,7 +110,7 @@ def _agent(
         trace_dir=trace_dir,
         skill_enabled=skill_enabled,
     )
-    fake = _ScriptedChatModel(script=script, seen=[])
+    fake = _ScriptedChatModel(script=script, seen=[], system_seen=[])
     agent.llm = fake  # type: ignore[assignment]
     agent.agent = agent._create_agent()
     return agent, fake
@@ -752,3 +757,55 @@ async def test_without_the_flag_a_prose_wrapped_answer_is_still_re_asked(
     assert after == before  # the re-ask is a fresh attempt on the restored store
     (rec,) = _records(tmp_path / "t")
     assert rec["fix_fired"] == ["S2_retry"]
+
+
+# --- Skill inline (opt-in, HARNESS_SKILL_INLINE) ---------------------------------------------
+
+
+async def _system_prompt_seen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    inline: bool,
+    skill_enabled: bool,
+) -> str:
+    if inline:
+        monkeypatch.setenv("HARNESS_SKILL_INLINE", "1")
+    else:
+        monkeypatch.delenv("HARNESS_SKILL_INLINE", raising=False)
+    agent, fake = _agent(tmp_path / "t", [_OK], skill_enabled=skill_enabled)
+    try:
+        await agent.generate_response("getRestaurant", {"id": "rest_001"})
+    finally:
+        await agent.shutdown()
+    return fake.system_seen[0]
+
+
+@pytest.mark.asyncio
+async def test_skill_inline_puts_the_skill_text_in_the_system_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_md = (_FIXTURE_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    probe = next(line for line in skill_md.splitlines() if len(line.strip()) > 30)
+    on = await _system_prompt_seen(
+        tmp_path / "on", monkeypatch, inline=True, skill_enabled=True
+    )
+    off = await _system_prompt_seen(
+        tmp_path / "off", monkeypatch, inline=False, skill_enabled=True
+    )
+    assert "## The simulation skill" in on and probe in on
+    assert "## The simulation skill" not in off and probe not in off
+
+
+@pytest.mark.asyncio
+async def test_skill_inline_leaves_no_skill_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on = await _system_prompt_seen(
+        tmp_path / "on", monkeypatch, inline=True, skill_enabled=False
+    )
+    off = await _system_prompt_seen(
+        tmp_path / "off", monkeypatch, inline=False, skill_enabled=False
+    )
+    assert on and on == off  # non-empty: the no_skill prompt (raw spec) was seen
+    assert "## The simulation skill" not in on
