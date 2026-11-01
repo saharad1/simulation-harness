@@ -686,3 +686,69 @@ def test_s4_ordinary_errors_are_not_refusals(body: dict) -> None:
     from simulation_harness.agent.deep_agent import _is_unknown_operation
 
     assert not _is_unknown_operation(body)
+
+
+# --- Lenient JSON (opt-in, HARNESS_LLM_LENIENT_JSON) -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('Now I construct the response.\n\n{"id": "rest_001"}', {"id": "rest_001"}),
+        (
+            '```json\n{"id": "rest_001", "tags": [1, 2]}\n```',
+            {"id": "rest_001", "tags": [1, 2]},
+        ),
+        # An example fragment in the prose ends before the answer: the answer wins.
+        (
+            'Return {"rating": 4} like the skill says. Answer: {"id": "x", "rating": 4}',
+            {"id": "x", "rating": 4},
+        ),
+        ('Result: [{"id": "a"}, {"id": "b"}] done.', [{"id": "a"}, {"id": "b"}]),
+        ("no json at all", None),
+        ('{"truncated": ', None),
+    ],
+)
+def test_extract_json(text: str, expected: Any) -> None:
+    from simulation_harness.agent.deep_agent import _extract_json
+
+    got = _extract_json(text)
+    assert (json.loads(got) if got is not None else None) == expected
+
+
+@pytest.mark.asyncio
+async def test_lenient_json_keeps_the_writes_of_a_prose_wrapped_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HARNESS_LLM_LENIENT_JSON", "1")
+    script = [
+        _rating_update("c1", 4.9),
+        AIMessage(
+            content='Updated. The response is:\n{"id": "rest_001", "rating": 4.9}'
+        ),
+    ]
+    out, before, after = await _run_rest_001(tmp_path / "t", script)
+    assert out == {"id": "rest_001", "rating": 4.9}
+    assert after["rating"] == 4.9 and before["rating"] != 4.9
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["lenient_json"]
+    assert rec["outcome"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_without_the_flag_a_prose_wrapped_answer_is_still_re_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HARNESS_LLM_LENIENT_JSON", raising=False)
+    script = [
+        _rating_update("c1", 4.9),
+        AIMessage(
+            content='Updated. The response is:\n{"id": "rest_001", "rating": 4.9}'
+        ),
+        _OK,
+    ]
+    out, before, after = await _run_rest_001(tmp_path / "t", script)
+    assert out == {"id": "rest_001", "name": "The Italian Corner"}
+    assert after == before  # the re-ask is a fresh attempt on the restored store
+    (rec,) = _records(tmp_path / "t")
+    assert rec["fix_fired"] == ["S2_retry"]

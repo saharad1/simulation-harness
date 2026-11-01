@@ -6,6 +6,7 @@ LangChain and LangGraph directly (without the deepagents library).
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import time
@@ -150,6 +151,44 @@ def _fired(trace: dict[str, Any] | None, fix: str) -> None:
         fired = trace.setdefault("fix_fired", [])
         if fix not in fired:
             fired.append(fix)
+
+
+#: Opt-in (env ``HARNESS_LLM_LENIENT_JSON``, read per call like HARNESS_LLM_NO_CACHE): a final
+#: answer that is not pure JSON is accepted if it contains one, instead of being re-asked
+#: (S2) with the call's writes rolled back. For comparing serving models whose replies wrap
+#: the JSON in prose or a code fence; off by default, so the paper runs are unchanged.
+LENIENT_JSON_ENV = "HARNESS_LLM_LENIENT_JSON"
+LENIENT_JSON = "lenient_json"
+
+
+def _lenient_json_enabled() -> bool:
+    return os.environ.get(LENIENT_JSON_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def _extract_json(text: str) -> str | None:
+    """The JSON object or array embedded in ``text``, or None.
+
+    Of every ``{``/``[`` that starts a complete JSON value, the one that ends last wins,
+    and among those the one that starts first: the answer typically follows the prose,
+    and an example fragment inside the prose ends earlier than the answer does.
+    """
+    decoder = json.JSONDecoder()
+    best: tuple[int, int] | None = None  # (end, -start)
+    for start, ch in enumerate(text):
+        if ch not in "{[":
+            continue
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, (dict, list)):
+            continue
+        if best is None or (end, -start) > best:
+            best = (end, -start)
+    if best is None:
+        return None
+    end, neg_start = best
+    return text[-neg_start:end]
 
 
 def _json_retry_message(
@@ -732,6 +771,19 @@ class DeepAgent:
                         json.loads(response_text)
                         break
                     except json.JSONDecodeError as parse_error:
+                        embedded = (
+                            _extract_json(response_text)
+                            if _lenient_json_enabled()
+                            else None
+                        )
+                        if embedded is not None:
+                            logger.warning(
+                                f"Lenient JSON: answer extracted from a non-JSON reply: "
+                                f"tool={tool_name}, response={response_text[:200]}"
+                            )
+                            _fired(trace, LENIENT_JSON)
+                            response_text = embedded
+                            break
                         retries_left -= 1
                         logger.warning(
                             f"JSON parse error, re-asking: tool={tool_name}, "
